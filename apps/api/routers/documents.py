@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from apps.api.dependencies import get_extraction_pipeline, get_storage, get_validation_pipeline
 from apps.api.schemas import DocumentListOut, ProcessingResultOut
@@ -96,10 +97,18 @@ async def process_document(
 
     await ingestion_service.update_status(db, document, DocumentStatus.PROCESSING)
 
-    data = storage.read(document.storage_key)
+    # Both calls below can take real wall-clock time (a large file read, and
+    # especially OCR: rasterizing + recognizing every page of a PDF) and
+    # are synchronous — calling them directly here would block the entire
+    # event loop, stalling every other concurrent request (including
+    # unrelated /health checks) for as long as this one document takes.
+    # Confirmed directly: a 25-page PDF blocked a concurrent /health call
+    # for the full ~20s OCR took. run_in_threadpool moves the blocking work
+    # off the event loop thread.
+    data = await run_in_threadpool(storage.read, document.storage_key)
     try:
-        extraction_output = extraction_pipeline.extract(
-            data=data, content_type=document.content_type
+        extraction_output = await run_in_threadpool(
+            extraction_pipeline.extract, data=data, content_type=document.content_type
         )
     except ExtractionError as exc:
         # The pipeline couldn't read the bytes at all (corrupted file,

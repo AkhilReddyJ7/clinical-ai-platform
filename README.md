@@ -286,6 +286,12 @@ If the uploaded bytes don't actually match the declared content type
 raw `500` and a document stuck in `processing` forever. See
 `docs/adr/0012-...`.
 
+OCR runs off the request's event loop (`starlette.concurrency.run_in_threadpool`),
+so one large document being processed doesn't stall other requests —
+including `/health` — while it runs. Measured directly: a 25-page PDF
+blocked a concurrent `/health` call for the full ~20s OCR took before this
+fix, ~0.03s after. See `docs/adr/0013-...`.
+
 **Fetch the processing result**
 
 ```bash

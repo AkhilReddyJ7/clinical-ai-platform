@@ -18,3 +18,4 @@ follows: Status, Context, Decision, Consequences.
 | [0010](0010-real-local-ocr-via-tesseract-fields-stay-synthetic.md) | Real local OCR via Tesseract; fields stay synthetic pending real extraction | Accepted (resolved by 0011) |
 | [0011](0011-phi-detection-gates-persistence.md) | PHI detection gates persistence, not just document status | Accepted |
 | [0012](0012-graceful-extraction-failure-handling.md) | Graceful extraction failure handling | Accepted |
+| [0013](0013-run-extraction-off-the-event-loop.md) | Run extraction (and storage reads) off the event loop | Accepted |
