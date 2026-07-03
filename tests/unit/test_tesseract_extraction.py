@@ -5,6 +5,7 @@ import pypdfium2 as pdfium
 import pytest
 from PIL import Image
 
+from modules.ocr.base import ExtractionError
 from modules.ocr.mock import synthesize_fields
 from modules.ocr.tesseract import TesseractExtractionPipeline, _ocr_pil_image
 
@@ -32,6 +33,20 @@ def test_unsupported_content_type_raises_value_error() -> None:
     pipeline = TesseractExtractionPipeline()
     with pytest.raises(ValueError):
         pipeline.extract(data=b"data", content_type="application/octet-stream")
+
+
+def test_corrupted_image_raises_extraction_error_not_a_crash() -> None:
+    # No real image decoding ever starts — PIL rejects the bytes before
+    # anything touches tesseract, so no binary is needed for this test.
+    pipeline = TesseractExtractionPipeline()
+    with pytest.raises(ExtractionError):
+        pipeline.extract(data=b"not actually a png", content_type="image/png")
+
+
+def test_corrupted_pdf_raises_extraction_error_not_a_crash() -> None:
+    pipeline = TesseractExtractionPipeline()
+    with pytest.raises(ExtractionError):
+        pipeline.extract(data=b"not actually a pdf", content_type="application/pdf")
 
 
 def test_ocr_pil_image_filters_empty_words_and_averages_confidence() -> None:

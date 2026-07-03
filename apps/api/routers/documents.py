@@ -11,7 +11,7 @@ from modules.ingestion import service as ingestion_service
 from modules.ingestion.models import DocumentStatus
 from modules.ingestion.schemas import DocumentOut
 from modules.ingestion.storage import StorageBackend
-from modules.ocr.base import ExtractionPipeline
+from modules.ocr.base import ExtractionError, ExtractionPipeline
 from modules.ocr.models import ExtractionResult
 from modules.ocr.schemas import ExtractionResultOut
 from modules.validation.base import ValidationPipeline
@@ -97,7 +97,42 @@ async def process_document(
     await ingestion_service.update_status(db, document, DocumentStatus.PROCESSING)
 
     data = storage.read(document.storage_key)
-    extraction_output = extraction_pipeline.extract(data=data, content_type=document.content_type)
+    try:
+        extraction_output = extraction_pipeline.extract(
+            data=data, content_type=document.content_type
+        )
+    except ExtractionError as exc:
+        # The pipeline couldn't read the bytes at all (corrupted file,
+        # content-type/actual-content mismatch) — fail the document
+        # cleanly instead of leaving it stuck in PROCESSING behind an
+        # unhandled 500.
+        extraction = ExtractionResult(
+            document_id=document.id,
+            raw_text=f"[EXTRACTION FAILED: {exc}]",
+            fields={},
+            confidence=0.0,
+        )
+        db.add(extraction)
+        validation = ValidationResult(
+            document_id=document.id,
+            is_valid=False,
+            issues=[f"extraction failed: {exc}"],
+        )
+        db.add(validation)
+        await db.commit()
+        await db.refresh(extraction)
+        await db.refresh(validation)
+        document = await ingestion_service.update_status(db, document, DocumentStatus.FAILED)
+
+        logger.warning(
+            "document processing failed: extraction error id=%s error=%s", document.id, exc
+        )
+
+        return ProcessingResultOut(
+            document=DocumentOut.model_validate(document),
+            extraction=ExtractionResultOut.model_validate(extraction),
+            validation=ValidationResultOut.model_validate(validation),
+        )
 
     # Validate BEFORE persisting anything derived from the real text: a PHI
     # finding must gate what gets written, not just get flagged after the

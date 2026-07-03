@@ -2,9 +2,10 @@ import io
 
 import pypdfium2 as pdfium
 import pytesseract
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
+from pypdfium2 import PdfiumError
 
-from modules.ocr.base import ExtractionOutput, ExtractionPipeline
+from modules.ocr.base import ExtractionError, ExtractionOutput, ExtractionPipeline
 from modules.ocr.mock import synthesize_fields
 
 # Scale factor for rasterizing PDF pages before OCR: 2.0 ~= 144 DPI, a
@@ -45,12 +46,18 @@ class TesseractExtractionPipeline(ExtractionPipeline):
 
     @staticmethod
     def _ocr_image(data: bytes) -> tuple[str, float]:
-        with Image.open(io.BytesIO(data)) as image:
-            return _ocr_pil_image(image)
+        try:
+            with Image.open(io.BytesIO(data)) as image:
+                return _ocr_pil_image(image)
+        except UnidentifiedImageError as exc:
+            raise ExtractionError(f"could not read image data: {exc}") from exc
 
     @staticmethod
     def _ocr_pdf(data: bytes) -> tuple[str, float]:
-        pdf = pdfium.PdfDocument(data)
+        try:
+            pdf = pdfium.PdfDocument(data)
+        except PdfiumError as exc:
+            raise ExtractionError(f"could not read PDF data: {exc}") from exc
         try:
             page_texts: list[str] = []
             confidences: list[float] = []

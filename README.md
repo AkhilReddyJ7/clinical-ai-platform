@@ -181,12 +181,14 @@ transitions, required-fields and PHI-pattern validation (individually and
 composed), auth (missing/wrong/correct key, fail-closed with no keys
 configured), and the real `TesseractExtractionPipeline`'s dispatch/
 confidence-aggregation logic (`pytesseract` calls mocked — no binary
-needed) plus one true end-to-end test proving real `text/plain` content
-now reaches PHI detection *and* gets redacted before persisting — asserting
-against both the API response and a follow-up `GET /result` call, so it's
-not just checking what one response happens to show (no OCR binary needed
-for that path either, pure passthrough). Image/PDF OCR itself is verified
-separately, in Docker — see Continuous integration, below.
+needed) plus true end-to-end tests proving: real `text/plain` content now
+reaches PHI detection *and* gets redacted before persisting (asserting
+against both the API response and a follow-up `GET /result` call, not just
+one response); and a corrupted/mismatched-content-type upload fails
+cleanly (`status: failed`, not stuck in `processing` behind a `500`) —
+neither needs an OCR binary, both exercise real code paths. Image/PDF OCR
+itself is verified separately, in Docker — see Continuous integration,
+below.
 
 ## Continuous integration
 
@@ -277,6 +279,12 @@ placeholder is stored instead of the real text (`fields` become `{}` too),
 and the document's status becomes `failed`. Otherwise the real `raw_text`/
 `fields` are persisted and status becomes `validated` or `failed` based on
 the other validators. See `docs/adr/0011-...`.
+
+If the uploaded bytes don't actually match the declared content type
+(corrupted file, mismatched `Content-Type`), extraction fails cleanly —
+`200` with `status: failed` and a clear `issues` message — rather than a
+raw `500` and a document stuck in `processing` forever. See
+`docs/adr/0012-...`.
 
 **Fetch the processing result**
 
