@@ -67,6 +67,33 @@ jobs:
           curl -sf -H "X-API-Key: local-dev-key" -X POST \
             "http://localhost:8000/documents/$doc_id/process" | grep -q '"status":"validated"'
 
+      - name: Verify real Tesseract OCR works in the built image
+        run: |
+          # Runs a real image through the real TesseractExtractionPipeline
+          # inside the built container. Deliberately not asserting exact
+          # OCR text — tiny bitmap-font renders are legitimately noisy
+          # (confirmed while building this) — only that OCR functions at
+          # all and produces meaningful, non-trivial confidence. This is
+          # what would actually catch "tesseract missing/broken in the
+          # image" without flaking on OCR accuracy variance.
+          docker compose exec -T api python3 -c "
+          from modules.ocr.tesseract import TesseractExtractionPipeline
+          from PIL import Image, ImageDraw, ImageFont
+          import io
+
+          img = Image.new('RGB', (600, 100), color='white')
+          draw = ImageDraw.Draw(img)
+          draw.text((10, 40), 'automated continuous integration OCR check', fill='black', font=ImageFont.load_default())
+          buf = io.BytesIO()
+          img.save(buf, format='PNG')
+
+          output = TesseractExtractionPipeline().extract(data=buf.getvalue(), content_type='image/png')
+          print('raw_text:', repr(output.raw_text))
+          print('confidence:', output.confidence)
+          assert output.raw_text.strip(), 'tesseract produced no text at all'
+          assert output.confidence > 0.3, f'suspiciously low confidence: {output.confidence}'
+          "
+
       - name: Show logs on failure
         if: failure()
         run: docker compose logs

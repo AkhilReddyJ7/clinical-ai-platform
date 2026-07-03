@@ -1,5 +1,12 @@
 FROM python:3.12-slim
 
+# Local, vendor-free OCR: no API key, no per-call cost, no external service.
+# Only tesseract itself is a system package here — pypdfium2 (PDF
+# rasterization) ships prebuilt binaries in its wheel, no poppler needed.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 # Match the common first-uid Linux convention (most dev hosts' first user)
 # so the docker-compose bind mount (.:/app) doesn't produce root-owned
 # files on the host filesystem.

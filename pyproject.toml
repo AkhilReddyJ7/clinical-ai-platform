@@ -13,6 +13,9 @@ dependencies = [
     "asyncpg>=0.30.0",
     "python-multipart>=0.0.20",
     "alembic>=1.14.0",
+    "pytesseract>=0.3.13",
+    "pillow>=12.3.0",
+    "pypdfium2>=5.11.0",
 ]
 
 [dependency-groups]
@@ -42,3 +45,9 @@ target-version = ["py314"]
 python_version = "3.14"
 strict = true
 explicit_package_bases = true
+
+# Neither library ships type stubs or a py.typed marker; strict mode still
+# applies to all first-party code.
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pytesseract"]
+ignore_missing_imports = true

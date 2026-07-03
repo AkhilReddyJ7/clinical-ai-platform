@@ -1,8 +1,8 @@
 # Architecture Decision Records
 
 Decisions made during Sprint 1 (MVP slice), Sprint 1.5 (production-readiness
-hardening), and Sprint 2 (auth, PHI detection). Each record follows: Status,
-Context, Decision, Consequences.
+hardening), and Sprint 2 (auth, PHI detection, real OCR). Each record
+follows: Status, Context, Decision, Consequences.
 
 | # | Title | Status |
 |---|---|---|
@@ -15,3 +15,4 @@ Context, Decision, Consequences.
 | [0007](0007-ci-validates-docker-build-and-boot.md) | CI validates the Docker build and boot, not just the Python package | Accepted |
 | [0008](0008-lightweight-regex-phi-detection-not-presidio.md) | Lightweight regex-based PHI detection, not Presidio | Accepted |
 | [0009](0009-preseed-upload-directory-ownership-in-image.md) | Pre-seed the upload directory in the image so named-volume ownership is correct | Accepted |
+| [0010](0010-real-local-ocr-via-tesseract-fields-stay-synthetic.md) | Real local OCR via Tesseract; fields stay synthetic pending real extraction | Accepted |

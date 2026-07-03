@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from modules.ingestion.storage import LocalFileStorage, StorageBackend
 from modules.ocr.base import ExtractionPipeline
-from modules.ocr.mock import MockExtractionPipeline
+from modules.ocr.tesseract import TesseractExtractionPipeline
 from modules.validation.base import ValidationPipeline
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
@@ -18,7 +18,7 @@ def get_storage() -> StorageBackend:
 
 @lru_cache
 def get_extraction_pipeline() -> ExtractionPipeline:
-    return MockExtractionPipeline()
+    return TesseractExtractionPipeline()
 
 
 @lru_cache

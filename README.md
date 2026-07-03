@@ -5,8 +5,10 @@
 A document intelligence platform for clinical documents: upload, track, and run
 documents through an extraction + validation pipeline.
 
-This is an early-stage local MVP. It is **not** HIPAA-compliant and uses only
-synthetic data — see [Status & constraints](#status--constraints).
+This is an early-stage local MVP. It is **not** HIPAA-compliant. Extracted
+text is now real (read from whatever you upload); structured fields are
+still synthetic placeholders — **never upload real patient data**, see
+[Status & constraints](#status--constraints).
 
 ## Architecture
 
@@ -17,7 +19,9 @@ apps/
 
 modules/
   ingestion/      document registry, upload handling, storage abstraction
-  ocr/            extraction pipeline interface (+ mock implementation)
+  ocr/            extraction pipeline interface; real text via local
+                   Tesseract OCR (images/PDF) or passthrough (text/plain),
+                   structured fields still synthetic (+ mock for tests)
   validation/     validation pipeline interface (required-fields rule +
                    PHI-pattern guardrail, composed together)
   auth/           static API-key auth (X-API-Key header) on /documents/*
@@ -34,9 +38,14 @@ alembic/          schema migrations (see Migrations, below)
 Each pipeline stage is defined as an abstract interface with a concrete
 implementation behind it:
 
-- `modules.ocr.base.ExtractionPipeline` — implemented today by
-  `MockExtractionPipeline` (deterministic synthetic fields). A real OCR/LLM
-  extraction backend implements the same interface later.
+- `modules.ocr.base.ExtractionPipeline` — implemented in production by
+  `TesseractExtractionPipeline`: real text via local Tesseract OCR
+  (`image/png`, `image/jpeg`, `application/pdf` via page rasterization) or
+  direct decode (`text/plain`, no OCR needed). Structured `fields` are
+  still synthetic (shared with `MockExtractionPipeline`, which stays wired
+  into the test suite for speed) — a real field-extraction backend (e.g.
+  LLM-based) implements the same interface and replaces just that part
+  later. See `docs/adr/0010-...`.
 - `modules.validation.base.ValidationPipeline` — implemented today by
   `RequiredFieldsValidator` (data completeness) and `PHIDetectionValidator`
   (regex-based guardrail for SSN/email/phone-shaped patterns), run together
@@ -73,7 +82,8 @@ docker compose up --build
 
 This starts:
 - `api` — FastAPI app on `http://localhost:8000`, with its own Docker
-  healthcheck hitting `/health`
+  healthcheck hitting `/health`. The image includes `tesseract-ocr` for
+  real, local OCR — no API key or external vendor needed.
 - `postgres` — Postgres 16, with a named volume for data and another for
   uploaded files (`uploads_data`, mounted at `/app/data/uploads`)
 
@@ -120,6 +130,11 @@ uv run alembic upgrade head
 uv run uvicorn apps.api.main:app --reload
 ```
 
+`text/plain` uploads work either way (pure passthrough, no OCR). To process
+`image/*` or `application/pdf` uploads outside Docker, install Tesseract on
+the host yourself (e.g. `apt install tesseract-ocr` / `brew install
+tesseract`) — Docker Compose is the only path that installs it for you.
+
 ## Migrations
 
 Schema changes go through Alembic — the app no longer creates tables
@@ -158,12 +173,18 @@ uv run pytest
 make test
 ```
 
-Tests don't require Postgres or Docker — they run against an in-memory
-SQLite database and a temp-directory storage backend via dependency
-overrides (`tests/conftest.py`). Coverage: health, upload, registry
-(list/get), pagination, status transitions, the mock extraction pipeline,
-required-fields and PHI-pattern validation (individually and composed),
-and auth (missing/wrong/correct key, fail-closed with no keys configured).
+Tests don't require Postgres, Docker, or a Tesseract install — they run
+against an in-memory SQLite database, a temp-directory storage backend, and
+`MockExtractionPipeline`, all via dependency overrides (`tests/conftest.py`).
+Coverage: health, upload, registry (list/get), pagination, status
+transitions, required-fields and PHI-pattern validation (individually and
+composed), auth (missing/wrong/correct key, fail-closed with no keys
+configured), and the real `TesseractExtractionPipeline`'s dispatch/
+confidence-aggregation logic (`pytesseract` calls mocked — no binary
+needed) plus one true end-to-end test proving real `text/plain` content
+now reaches PHI detection (no OCR binary needed for that path either, pure
+passthrough). Image/PDF OCR itself is verified separately, in Docker — see
+Continuous integration, below.
 
 ## Continuous integration
 
@@ -175,13 +196,16 @@ Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
 - **docker** — `docker compose build`, `docker compose up --wait` (fails the
   build if either container doesn't reach its healthcheck), a smoke test
   against `/health`, an assertion that the `api` container isn't running as
-  root, and a full upload → process smoke test against the live stack (auth
-  header, real file write to the named volume, real Postgres). This is the
-  job that actually validates the thing this project ships — the
-  Python-only `test` job wouldn't have caught a broken Dockerfile, a bad
-  `docker-compose.yml`, the app regressing back to running as root, or the
-  named-volume permission bug the upload smoke test was added specifically
-  to catch (see `docs/adr/0009-...`).
+  root, a full upload → process smoke test against the live stack (auth
+  header, real file write to the named volume, real Postgres), and a real
+  Tesseract OCR check (runs a generated image through the real pipeline
+  inside the built container, asserting OCR actually functions — not an
+  exact-text match, which proved flaky against tiny test-image renders).
+  This is the job that actually validates the thing this project ships —
+  the Python-only `test` job wouldn't have caught a broken Dockerfile, a
+  bad `docker-compose.yml`, the app regressing back to running as root, the
+  named-volume permission bug (`docs/adr/0009-...`), or Tesseract silently
+  missing/broken in the image (`docs/adr/0010-...`).
 
 ## API examples
 
@@ -242,9 +266,12 @@ curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}
 curl -X POST -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}/process
 ```
 
-Runs the mock OCR/extraction pipeline against the stored file, then the
-validation pipeline against the extracted fields, persists both results, and
-advances the document's status to `validated` or `failed`.
+Runs real OCR against the stored file (Tesseract for images/PDF, direct
+decode for `text/plain`) to produce real `raw_text`, generates still-
+synthetic `fields` (see [Architecture](#architecture)), then runs the
+validation pipeline — including PHI detection against the *real* text —
+persists both results, and advances the document's status to `validated`
+or `failed`.
 
 **Fetch the processing result**
 
@@ -279,19 +306,35 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
 
 - **No HIPAA compliance claim.** This is a local development scaffold, not a
   compliant system.
-- **No real PHI.** The extraction pipeline is a mock that returns
-  deterministic, clearly-synthetic field values (see
-  `modules/ocr/mock.py`) — never point this at real patient data.
+- **Never upload real patient data — this is more load-bearing than before.**
+  Through Sprint 1, `raw_text` was always synthetic regardless of what you
+  uploaded, so real PHI structurally could not enter the system. As of
+  real OCR (`docs/adr/0010-...`), `raw_text` reflects whatever you actually
+  upload. Structured `fields` are still synthetic placeholders, but the
+  extracted *text* is real. Treat this exactly like any other early-stage
+  system with no compliance controls: synthetic/test data only.
+- **PHI detection runs after storage, not before.** `PHIDetectionValidator`
+  (see below) flags real-PHI-shaped content and marks the document
+  `status: failed`, but by the time it runs, the real `raw_text` is already
+  written to `extraction_results` in Postgres — detection doesn't currently
+  block persistence. Verified directly: a real image containing a
+  fake-but-pattern-shaped SSN reaches the database and gets flagged, not
+  rejected pre-storage. Making detection gate storage (rather than follow
+  it) is unresolved, named future work, not solved yet.
 - **PHI detection is a lightweight guardrail, not a compliance control.**
   `PHIDetectionValidator` is regex-based pattern matching (SSN/email/phone
   shapes) — no NER, no name or address recognition. It exists to catch
-  obvious accidental real-PHI ingestion once a real OCR backend lands, not
-  to certify a document is PHI-free. See `docs/adr/0008-...`.
+  obvious accidental real-PHI ingestion, not to certify a document is
+  PHI-free. Now genuinely exercised against real OCR'd content (previously
+  only unit-tested against synthetic mock text — see `docs/adr/0008-...`).
 - **Auth is a shared static key, not identity.** `X-API-Key` gates
   `/documents*` but there's no concept of a user, session, or per-caller
   audit trail yet — anyone with the key has full access. Real identity,
   scoped permissions, and audit logging are future work (`modules/audit`).
+- **Field extraction is still synthetic.** Real OCR (text) shipped; turning
+  that real text into real structured fields needs an LLM (or comparable)
+  backend, which needs a vendor/credential decision not made yet.
 - Extraction, validation, and storage are all interchangeable behind their
-  respective interfaces — extending toward real OCR, RAG-based retrieval, PHI
-  detection, or LLM-based extraction means adding a new implementation, not
-  restructuring the API.
+  respective interfaces — extending toward LLM-based field extraction,
+  cloud/vision-LLM OCR, or RAG-based retrieval means adding a new
+  implementation, not restructuring the API.
