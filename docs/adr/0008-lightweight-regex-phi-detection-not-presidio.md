@@ -52,3 +52,10 @@ composite; no router or endpoint changes were needed, since
   backend exists and actually produces content that could contain real PHI
   — that's the point at which the lightweight heuristic's limitations
   become a live risk rather than a theoretical one.
+
+  **Revisited in [0015](0015-phi-detection-re-evaluation-and-pattern-expansion.md):**
+  real OCR now exists ([0010](0010-real-local-ocr-via-tesseract-fields-stay-synthetic.md)).
+  Quantified the gap (4/17 realistic PHI-shaped test cases caught),
+  closed what plain regex can safely cover (IP addresses, credit cards,
+  space-separated SSNs), and left the NER/Presidio question open as a
+  named decision rather than resolving it unilaterally.

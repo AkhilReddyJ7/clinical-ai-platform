@@ -12,7 +12,7 @@ class _PHIPattern:
 
 
 _PHI_PATTERNS = (
-    _PHIPattern("SSN-like number", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    _PHIPattern("SSN-like number", re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b")),
     _PHIPattern("email address", re.compile(r"\b[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}\b")),
     _PHIPattern(
         "phone number",
@@ -20,19 +20,38 @@ _PHI_PATTERNS = (
         # only applied to the bare-digits alternative.
         re.compile(r"(?:\(\d{3}\)\s?|\b\d{3}[-.\s])\d{3}[-.\s]\d{4}\b"),
     ),
+    _PHIPattern(
+        "IP address",
+        re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
+    ),
+    _PHIPattern(
+        "credit card number",
+        re.compile(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b"),
+    ),
 )
 
 
 class PHIDetectionValidator(ValidationPipeline):
-    """Flags text patterns that resemble real PHI (SSNs, emails, phone
-    numbers) as a safety guardrail against accidentally ingesting real
-    patient data through a future real OCR backend.
+    """Flags text patterns that resemble real PHI/PII (SSNs, emails, phone
+    numbers, IP addresses, credit card numbers) as a safety guardrail
+    against accidentally ingesting real patient data through the real OCR
+    backend.
 
     Deliberately a lightweight pattern-matching heuristic, not a
-    comprehensive PHI detector — no NER, no name/address recognition. A
-    production system would likely pair this with something like Microsoft
-    Presidio; that's a real dependency (spaCy + a language model) not
-    justified for this first pass. See docs/adr for the scope tradeoff.
+    comprehensive PHI detector. Two categories are excluded on purpose,
+    for different reasons — see docs/adr/0015 for the full evaluation:
+
+    - Person names and street addresses require NER (no reliable regex
+      shape exists for either); a production system would likely pair this
+      with something like Microsoft Presidio for those. Deferred pending a
+      decision — spaCy + a language model is a real dependency (build
+      time, image size, per-call latency), not something to add silently.
+    - Generic dates, age+zip-code combinations, and unformatted bare digit
+      runs (SSN/phone with no separators) were deliberately left out even
+      though they're theoretically regex-matchable: every clinical note
+      has multiple non-DOB dates, and a bare 9- or 10-digit number is
+      indistinguishable from countless benign IDs without context a plain
+      regex can't see. Adding them would trade signal for noise.
     """
 
     def validate(self, extraction: ExtractionOutput) -> ValidationOutput:

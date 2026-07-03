@@ -48,10 +48,12 @@ implementation behind it:
   later. See `docs/adr/0010-...`.
 - `modules.validation.base.ValidationPipeline` — implemented today by
   `RequiredFieldsValidator` (data completeness) and `PHIDetectionValidator`
-  (regex-based guardrail for SSN/email/phone-shaped patterns), run together
-  via `CompositeValidationPipeline`. A clinical rules engine, or a more
-  robust PHI detector (e.g. Microsoft Presidio), implements the same
-  interface and composes in alongside them later.
+  (regex-based guardrail for SSN/email/phone/IP-address/credit-card-shaped
+  patterns), run together via `CompositeValidationPipeline`. A clinical
+  rules engine, or a more robust NER-based PHI detector (e.g. Microsoft
+  Presidio) for the two biggest known gaps — names and addresses — implements
+  the same interface and composes in alongside them later; deliberately
+  not added yet, see `docs/adr/0015-...`.
 - `modules.ingestion.storage.StorageBackend` — implemented today by
   `LocalFileStorage`. An S3/GCS-backed implementation plugs in later without
   touching callers.
@@ -346,12 +348,19 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   is present. **Still partial** — the original uploaded file itself lands
   in the storage backend at upload time, before any scanning is possible;
   this closes the database exposure, not that one. See `docs/adr/0011-...`.
-- **PHI detection is a lightweight guardrail, not a compliance control.**
-  `PHIDetectionValidator` is regex-based pattern matching (SSN/email/phone
-  shapes) — no NER, no name or address recognition. It exists to catch
+- **PHI detection is a lightweight guardrail, not a compliance control —
+  and its two biggest gaps are quantified, not just theoretical.**
+  `PHIDetectionValidator` is regex-based pattern matching (SSN, email,
+  phone, IP address, credit card shapes) — no NER, so **no person-name or
+  street-address recognition at all**. Evaluated against 17 constructed,
+  synthetic-but-realistic PHI-shaped test cases: caught 4/17 before this
+  pattern set was expanded, still misses names and addresses specifically
+  because no regex shape reliably represents either. It exists to catch
   obvious accidental real-PHI ingestion, not to certify a document is
-  PHI-free. Now genuinely exercised against real OCR'd content (previously
-  only unit-tested against synthetic mock text — see `docs/adr/0008-...`).
+  PHI-free. Genuinely exercised against real OCR'd content (previously
+  only unit-tested against synthetic mock text). Upgrading toward NER
+  (e.g. Microsoft Presidio) is a live, evaluated, and still-open decision
+  — see `docs/adr/0015-...`.
 - **Auth is a shared static key, not identity.** `X-API-Key` gates
   `/documents*` but there's no concept of a user, session, or per-caller
   audit trail yet — anyone with the key has full access. Real identity,
