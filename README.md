@@ -182,9 +182,11 @@ composed), auth (missing/wrong/correct key, fail-closed with no keys
 configured), and the real `TesseractExtractionPipeline`'s dispatch/
 confidence-aggregation logic (`pytesseract` calls mocked — no binary
 needed) plus one true end-to-end test proving real `text/plain` content
-now reaches PHI detection (no OCR binary needed for that path either, pure
-passthrough). Image/PDF OCR itself is verified separately, in Docker — see
-Continuous integration, below.
+now reaches PHI detection *and* gets redacted before persisting — asserting
+against both the API response and a follow-up `GET /result` call, so it's
+not just checking what one response happens to show (no OCR binary needed
+for that path either, pure passthrough). Image/PDF OCR itself is verified
+separately, in Docker — see Continuous integration, below.
 
 ## Continuous integration
 
@@ -270,8 +272,11 @@ Runs real OCR against the stored file (Tesseract for images/PDF, direct
 decode for `text/plain`) to produce real `raw_text`, generates still-
 synthetic `fields` (see [Architecture](#architecture)), then runs the
 validation pipeline — including PHI detection against the *real* text —
-persists both results, and advances the document's status to `validated`
-or `failed`.
+**before** persisting anything: if PHI-shaped content is found, a redacted
+placeholder is stored instead of the real text (`fields` become `{}` too),
+and the document's status becomes `failed`. Otherwise the real `raw_text`/
+`fields` are persisted and status becomes `validated` or `failed` based on
+the other validators. See `docs/adr/0011-...`.
 
 **Fetch the processing result**
 
@@ -313,14 +318,16 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   upload. Structured `fields` are still synthetic placeholders, but the
   extracted *text* is real. Treat this exactly like any other early-stage
   system with no compliance controls: synthetic/test data only.
-- **PHI detection runs after storage, not before.** `PHIDetectionValidator`
-  (see below) flags real-PHI-shaped content and marks the document
-  `status: failed`, but by the time it runs, the real `raw_text` is already
-  written to `extraction_results` in Postgres — detection doesn't currently
-  block persistence. Verified directly: a real image containing a
-  fake-but-pattern-shaped SSN reaches the database and gets flagged, not
-  rejected pre-storage. Making detection gate storage (rather than follow
-  it) is unresolved, named future work, not solved yet.
+- **PHI detection gates database persistence, not just document status.**
+  `PHIDetectionValidator` runs before anything derived from the real text
+  is written — a PHI finding gets a redacted placeholder
+  (`extraction_results.raw_text`/`fields`) instead of the real content, not
+  just a `status: failed` flag after the fact. Verified directly at the
+  database level: uploaded a real image containing a fake-but-pattern-shaped
+  SSN, queried Postgres directly, confirmed only the redaction placeholder
+  is present. **Still partial** — the original uploaded file itself lands
+  in the storage backend at upload time, before any scanning is possible;
+  this closes the database exposure, not that one. See `docs/adr/0011-...`.
 - **PHI detection is a lightweight guardrail, not a compliance control.**
   `PHIDetectionValidator` is regex-based pattern matching (SSN/email/phone
   shapes) — no NER, no name or address recognition. It exists to catch

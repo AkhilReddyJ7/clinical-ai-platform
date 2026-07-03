@@ -63,16 +63,19 @@ fail on every real upload, regressing the demo's happy path from
   entirely. Now `raw_text` reflects whatever was actually uploaded. The "no
   real PHI" constraint goes from *structurally impossible to violate* to
   *a policy relying on uploader discipline plus a detection guardrail*
-  ([0008](0008-lightweight-regex-phi-detection-not-presidio.md)) that
-  currently runs **after** the extraction result is already written to
-  Postgres, not before. A document that trips PHI detection is marked
-  `status: failed`, but its real-content-derived `raw_text` is already at
-  rest in `extraction_results` by that point. Verified this precisely:
-  uploaded a real image containing a fake-but-pattern-shaped SSN and
-  confirmed it reaches the database and gets flagged, not blocked
-  pre-storage. Whether PHI detection should gate storage rather than
-  follow it is real, unresolved future work — explicitly not solved here,
-  named so it isn't lost.
+  ([0008](0008-lightweight-regex-phi-detection-not-presidio.md)) that, at
+  the time this ADR was written, ran **after** the extraction result was
+  already written to Postgres, not before. A document that tripped PHI
+  detection was marked `status: failed`, but its real-content-derived
+  `raw_text` was already at rest in `extraction_results` by that point.
+  Verified this precisely: uploaded a real image containing a
+  fake-but-pattern-shaped SSN and confirmed it reached the database and
+  got flagged, not blocked pre-storage.
+
+  **Resolved same-day in [0011](0011-phi-detection-gates-persistence.md):**
+  validation now runs before persistence, and a PHI finding gets a
+  redacted placeholder written instead of the real text. Left the original
+  wording above as the record of what was true when this ADR was written.
 - Verified end-to-end against the live compose stack with genuinely
   rendered images and a real PDF (not just blank pages): Tesseract
   correctly reads real text from both, with real (not hardcoded) per-image

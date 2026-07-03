@@ -99,16 +99,40 @@ async def process_document(
     data = storage.read(document.storage_key)
     extraction_output = extraction_pipeline.extract(data=data, content_type=document.content_type)
 
-    extraction = ExtractionResult(
-        document_id=document.id,
-        raw_text=extraction_output.raw_text,
-        fields=extraction_output.fields,
-        confidence=extraction_output.confidence,
-    )
+    # Validate BEFORE persisting anything derived from the real text: a PHI
+    # finding must gate what gets written, not just get flagged after the
+    # fact. The original uploaded file still lives in the storage backend
+    # (unavoidable — it has to be received before it can be scanned at
+    # all), but the searchable/queryable database copy of the extracted
+    # text does not, if PHI-shaped content was detected in it.
+    validation_output = validation_pipeline.validate(extraction_output)
+    # Coupled to PHIDetectionValidator's "phi: ..." issue prefix
+    # (modules/validation/phi.py) — the simplest way to identify PHI
+    # findings specifically without threading issue provenance through
+    # ValidationOutput. Revisit if a future validator's failures shouldn't
+    # also gate storage.
+    phi_detected = any(issue.startswith("phi:") for issue in validation_output.issues)
+
+    if phi_detected:
+        extraction = ExtractionResult(
+            document_id=document.id,
+            raw_text=(
+                f"[REDACTED: PHI detected in {len(extraction_output.raw_text)} "
+                "characters of extracted text; not persisted]"
+            ),
+            fields={},
+            confidence=extraction_output.confidence,
+        )
+    else:
+        extraction = ExtractionResult(
+            document_id=document.id,
+            raw_text=extraction_output.raw_text,
+            fields=extraction_output.fields,
+            confidence=extraction_output.confidence,
+        )
     db.add(extraction)
     await ingestion_service.update_status(db, document, DocumentStatus.EXTRACTED)
 
-    validation_output = validation_pipeline.validate(extraction_output)
     validation = ValidationResult(
         document_id=document.id,
         is_valid=validation_output.is_valid,
@@ -121,6 +145,13 @@ async def process_document(
 
     final_status = DocumentStatus.VALIDATED if validation_output.is_valid else DocumentStatus.FAILED
     document = await ingestion_service.update_status(db, document, final_status)
+
+    if phi_detected:
+        logger.warning(
+            "document processing refused: PHI detected id=%s issues=%s",
+            document.id,
+            validation_output.issues,
+        )
 
     logger.info(
         "document processed id=%s status=%s is_valid=%s",
