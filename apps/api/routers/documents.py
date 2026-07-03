@@ -27,6 +27,30 @@ router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depend
 
 ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "text/plain"}
 
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MiB
+
+
+async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
+    """Reads an UploadFile in chunks, rejecting as soon as the running
+    total exceeds max_bytes. Unlike `await file.read()` — which
+    materializes the entire upload into memory before any size check can
+    run — this never buffers more than roughly max_bytes plus one chunk.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="file exceeds maximum upload size",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @router.post("", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 async def upload_document(
@@ -40,12 +64,7 @@ async def upload_document(
             detail=f"unsupported content type: {file.content_type}",
         )
 
-    data = await file.read()
-    if len(data) > settings.max_upload_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="file exceeds maximum upload size",
-        )
+    data = await _read_upload_within_limit(file, settings.max_upload_size_bytes)
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty file upload")
 

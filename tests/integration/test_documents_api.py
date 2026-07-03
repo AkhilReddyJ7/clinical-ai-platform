@@ -1,6 +1,9 @@
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
+
+from apps.api.routers import documents as documents_router
 
 
 def test_upload_creates_document_in_registry(client: TestClient) -> None:
@@ -83,6 +86,36 @@ def test_upload_rejects_empty_file(client: TestClient) -> None:
         files={"file": ("empty.txt", b"", "text/plain")},
     )
     assert response.status_code == 400
+
+
+def test_upload_rejects_file_exceeding_max_size(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Lowers the limit rather than uploading a genuinely huge file — keeps
+    # the test fast while still exercising the real chunked-read/reject
+    # path (apps/api/routers/documents.py::_read_upload_within_limit), not
+    # just a size arithmetic check.
+    monkeypatch.setattr(documents_router.settings, "max_upload_size_bytes", 10)
+
+    response = client.post(
+        "/documents",
+        files={"file": ("note.txt", b"this is definitely more than ten bytes", "text/plain")},
+    )
+
+    assert response.status_code == 413
+
+
+def test_upload_accepts_file_exactly_at_max_size(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(documents_router.settings, "max_upload_size_bytes", 10)
+
+    response = client.post(
+        "/documents",
+        files={"file": ("note.txt", b"0123456789", "text/plain")},  # exactly 10 bytes
+    )
+
+    assert response.status_code == 201
 
 
 def test_get_unknown_document_returns_404(client: TestClient) -> None:

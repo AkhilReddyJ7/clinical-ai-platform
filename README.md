@@ -176,9 +176,10 @@ make test
 Tests don't require Postgres, Docker, or a Tesseract install — they run
 against an in-memory SQLite database, a temp-directory storage backend, and
 `MockExtractionPipeline`, all via dependency overrides (`tests/conftest.py`).
-Coverage: health, upload, registry (list/get), pagination, status
-transitions, required-fields and PHI-pattern validation (individually and
-composed), auth (missing/wrong/correct key, fail-closed with no keys
+Coverage: health, upload (incl. size-limit rejection/boundary), registry
+(list/get), pagination, status transitions, required-fields and
+PHI-pattern validation (individually and composed), auth (missing/wrong/
+correct key, fail-closed with no keys
 configured), and the real `TesseractExtractionPipeline`'s dispatch/
 confidence-aggregation logic (`pytesseract` calls mocked — no binary
 needed) plus true end-to-end tests proving: real `text/plain` content now
@@ -238,7 +239,10 @@ curl -X POST http://localhost:8000/documents \
 ```
 
 Supported content types: `application/pdf`, `image/png`, `image/jpeg`,
-`text/plain`. Max upload size: 25MB (`MAX_UPLOAD_SIZE_BYTES`).
+`text/plain`. Max upload size: 25MB (`MAX_UPLOAD_SIZE_BYTES`), enforced by
+streaming the upload in 1 MiB chunks and rejecting as soon as the running
+total exceeds the limit (`413`) — never buffers the whole file into memory
+first to find out. See `docs/adr/0014-...`.
 
 **List the document registry**
 
