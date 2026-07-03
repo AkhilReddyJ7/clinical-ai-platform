@@ -9,3 +9,10 @@ class ProcessingResultOut(BaseModel):
     document: DocumentOut
     extraction: ExtractionResultOut
     validation: ValidationResultOut
+
+
+class DocumentListOut(BaseModel):
+    items: list[DocumentOut]
+    total: int
+    limit: int
+    offset: int

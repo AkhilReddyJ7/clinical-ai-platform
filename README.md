@@ -173,8 +173,20 @@ Supported content types: `application/pdf`, `image/png`, `image/jpeg`,
 **List the document registry**
 
 ```bash
-curl http://localhost:8000/documents
+curl "http://localhost:8000/documents?limit=20&offset=0"
 ```
+
+```json
+{
+  "items": [ { "id": "...", "filename": "...", "status": "uploaded", "..." : "..." } ],
+  "total": 3,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+Paginated, most recently uploaded first. `limit` defaults to 20 (max 100),
+`offset` defaults to 0; both are validated (`422` outside range).
 
 **Get a single document's status**
 

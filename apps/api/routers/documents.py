@@ -1,11 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_extraction_pipeline, get_storage, get_validation_pipeline
-from apps.api.schemas import ProcessingResultOut
+from apps.api.schemas import DocumentListOut, ProcessingResultOut
 from modules.ingestion import service as ingestion_service
 from modules.ingestion.models import DocumentStatus
 from modules.ingestion.schemas import DocumentOut
@@ -58,10 +58,19 @@ async def upload_document(
     return DocumentOut.model_validate(document)
 
 
-@router.get("", response_model=list[DocumentOut])
-async def list_documents(db: AsyncSession = Depends(get_db)) -> list[DocumentOut]:
-    documents = await ingestion_service.list_documents(db)
-    return [DocumentOut.model_validate(doc) for doc in documents]
+@router.get("", response_model=DocumentListOut)
+async def list_documents(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentListOut:
+    documents, total = await ingestion_service.list_documents(db, limit=limit, offset=offset)
+    return DocumentListOut(
+        items=[DocumentOut.model_validate(doc) for doc in documents],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentOut)
