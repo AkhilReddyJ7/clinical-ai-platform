@@ -13,13 +13,14 @@ follows: Status, Context, Decision, Consequences.
 | [0005](0005-paginated-response-envelope-breaking-change-accepted-early.md) | Paginated response envelope, breaking change accepted early | Accepted |
 | [0006](0006-non-root-container-fixed-uid-venv-outside-bind-mount.md) | Non-root container, fixed UID 1000, venv outside the bind mount | Accepted (corrected by 0009) |
 | [0007](0007-ci-validates-docker-build-and-boot.md) | CI validates the Docker build and boot, not just the Python package | Accepted |
-| [0008](0008-lightweight-regex-phi-detection-not-presidio.md) | Lightweight regex-based PHI detection, not Presidio | Accepted (revisited in 0015) |
+| [0008](0008-lightweight-regex-phi-detection-not-presidio.md) | Lightweight regex-based PHI detection, not Presidio | Accepted (revisited in 0015, resolved by 0018) |
 | [0009](0009-preseed-upload-directory-ownership-in-image.md) | Pre-seed the upload directory in the image so named-volume ownership is correct | Accepted |
 | [0010](0010-real-local-ocr-via-tesseract-fields-stay-synthetic.md) | Real local OCR via Tesseract; fields stay synthetic pending real extraction | Accepted (resolved by 0011) |
 | [0011](0011-phi-detection-gates-persistence.md) | PHI detection gates persistence, not just document status | Accepted |
 | [0012](0012-graceful-extraction-failure-handling.md) | Graceful extraction failure handling | Accepted |
 | [0013](0013-run-extraction-off-the-event-loop.md) | Run extraction (and storage reads) off the event loop | Accepted |
 | [0014](0014-stream-upload-size-enforcement.md) | Stream-enforce upload size limits instead of buffer-then-check | Accepted (corrected by 0017) |
-| [0015](0015-phi-detection-re-evaluation-and-pattern-expansion.md) | PHI detection re-evaluation and pattern expansion | Accepted |
+| [0015](0015-phi-detection-re-evaluation-and-pattern-expansion.md) | PHI detection re-evaluation and pattern expansion | Accepted (resolved by 0018) |
 | [0016](0016-cap-per-document-ocr-resource-cost.md) | Cap per-document OCR resource cost | Accepted |
 | [0017](0017-reject-unauthenticated-requests-before-body-read.md) | Reject unauthenticated requests before the body is ever read | Accepted |
+| [0018](0018-evaluated-presidio-not-adopting-yet.md) | Evaluated Microsoft Presidio for PHI detection; not adopting yet | Accepted |

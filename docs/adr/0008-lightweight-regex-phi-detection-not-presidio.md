@@ -59,3 +59,9 @@ composite; no router or endpoint changes were needed, since
   closed what plain regex can safely cover (IP addresses, credit cards,
   space-separated SSNs), and left the NER/Presidio question open as a
   named decision rather than resolving it unilaterally.
+
+  **The NER/Presidio question was resolved in
+  [0018](0018-evaluated-presidio-not-adopting-yet.md): evaluated with real
+  measurements, not adopted** — Presidio's image-size cost was larger than
+  expected and its accuracy wasn't a clean win over what's already here
+  (missed an SSN this project's own regex catches reliably).

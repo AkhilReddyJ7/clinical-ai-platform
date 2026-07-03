@@ -73,6 +73,8 @@ Split the gaps into three categories and handled each differently:
   this was already documented as a limitation, now it's a *quantified*
   one, and adding IP/credit-card coverage doesn't change the fact that
   the biggest realistic PHI categories are still unaddressed.
-- The NER/Presidio question is still open, now with concrete evidence
-  behind it rather than a theoretical "someday." That's a deliberate
-  stopping point, not an oversight.
+- The NER/Presidio question was left open here, now with concrete evidence
+  behind it rather than a theoretical "someday." **Resolved in
+  [0018](0018-evaluated-presidio-not-adopting-yet.md):** measured directly,
+  not adopted — cost and accuracy didn't clear the bar the evidence here
+  implied they might.

@@ -375,8 +375,10 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   obvious accidental real-PHI ingestion, not to certify a document is
   PHI-free. Genuinely exercised against real OCR'd content (previously
   only unit-tested against synthetic mock text). Upgrading toward NER
-  (e.g. Microsoft Presidio) is a live, evaluated, and still-open decision
-  — see `docs/adr/0015-...`.
+  (Microsoft Presidio) was evaluated directly — measured 299-680MB of
+  image growth depending on model choice, and accuracy that wasn't a
+  clean win (missed an SSN this project's own regex catches reliably) —
+  and **not adopted**. See `docs/adr/0015-...` and `docs/adr/0018-...`.
 - **Auth is a shared static key, not identity.** `X-API-Key` gates
   `/documents*` but there's no concept of a user, session, or per-caller
   audit trail yet — anyone with the key has full access. Real identity,
