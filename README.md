@@ -1,5 +1,7 @@
 # Clinical AI Intelligence Platform
 
+[![CI](https://github.com/AkhilReddyJ7/clinical-ai-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/AkhilReddyJ7/clinical-ai-platform/actions/workflows/ci.yml)
+
 A document intelligence platform for clinical documents: upload, track, and run
 documents through an extraction + validation pipeline.
 
@@ -129,6 +131,14 @@ SQLite database and a temp-directory storage backend via dependency
 overrides (`tests/conftest.py`). Coverage: health, upload, registry
 (list/get), status transitions, the mock extraction pipeline, and the
 validation pipeline.
+
+## Continuous integration
+
+Every push and pull request runs `.github/workflows/ci.yml`: `ruff check`,
+`black --check`, `mypy` (strict), then `pytest` — the same commands as
+above, via `uv sync --locked` so CI fails if `uv.lock` drifts from
+`pyproject.toml`. No Postgres service is needed in CI since tests run
+against SQLite.
 
 ## API examples
 
