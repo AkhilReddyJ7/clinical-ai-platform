@@ -140,11 +140,18 @@ validation pipeline.
 
 ## Continuous integration
 
-Every push and pull request runs `.github/workflows/ci.yml`: `ruff check`,
-`black --check`, `mypy` (strict), then `pytest` — the same commands as
-above, via `uv sync --locked` so CI fails if `uv.lock` drifts from
-`pyproject.toml`. No Postgres service is needed in CI since tests run
-against SQLite.
+Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
+
+- **test** — `ruff check`, `black --check`, `mypy` (strict), then `pytest`,
+  via `uv sync --locked` so CI fails if `uv.lock` drifts from
+  `pyproject.toml`. No Postgres service needed — tests run against SQLite.
+- **docker** — `docker compose build`, `docker compose up --wait` (fails the
+  build if either container doesn't reach its healthcheck), a smoke test
+  against `/health`, and an assertion that the `api` container isn't running
+  as root. This is the job that actually validates the thing this project
+  ships — the Python-only `test` job wouldn't have caught a broken
+  Dockerfile, a bad `docker-compose.yml`, or the app regressing back to
+  running as root.
 
 ## API examples
 
