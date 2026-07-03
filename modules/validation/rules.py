@@ -7,8 +7,9 @@ REQUIRED_FIELDS = ("patient_name", "mrn", "date_of_birth")
 class RequiredFieldsValidator(ValidationPipeline):
     """Baseline validator: confirms extraction produced the required fields.
 
-    Placeholder for future rule sets (schema validation, PHI redaction
-    checks, clinical plausibility checks).
+    Composed with PHIDetectionValidator (see CompositeValidationPipeline)
+    rather than absorbing that concern itself — data completeness and PHI
+    safety are different checks with different failure modes.
     """
 
     def validate(self, extraction: ExtractionOutput) -> ValidationOutput:

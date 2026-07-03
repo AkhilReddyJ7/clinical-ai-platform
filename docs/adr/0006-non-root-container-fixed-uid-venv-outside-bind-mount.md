@@ -41,6 +41,16 @@ start of this engagement, before the cause was understood.
   applies. Confirmed empty (actual uploads live in the named volume) and
   already `.gitignore`d — accepted as a Docker mechanics limitation, not an
   application-level security issue.
+
+  **Correction (see [0009](0009-preseed-upload-directory-ownership-in-image.md)):**
+  this same mechanism, applied to the *container*-side mount point rather
+  than the host-side stub, is not merely cosmetic — it left
+  `/app/data/uploads` root-owned inside the container on a fresh volume,
+  which broke every upload. The "not an application-level issue" judgment
+  above was wrong; it was a functional regression that a from-zero
+  `docker compose down -v && up --build` verification would have caught at
+  the time. Fixed in 0009 by pre-creating and chowning the directory in the
+  image.
 - UID 1000 is hardcoded, not parameterized via a build `ARG`. This is the
   standard convention (matches the default first user on most Linux
   distributions and this project's dev host), but is not guaranteed to

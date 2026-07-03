@@ -22,7 +22,14 @@ RUN pip install --no-cache-dir uv \
 
 COPY . .
 
-RUN chown -R appuser:appuser /app /opt/venv
+# Pre-create the upload storage directory so it exists, correctly owned, in
+# the image *before* docker-compose mounts the uploads_data named volume
+# there. Docker initializes a fresh named volume from whatever is already
+# at its mount point in the image (content and ownership) on first use; if
+# the path doesn't exist in the image, Docker creates the mount point
+# itself as root, and appuser can never write to it.
+RUN mkdir -p /app/data/uploads \
+    && chown -R appuser:appuser /app /opt/venv
 
 USER appuser
 

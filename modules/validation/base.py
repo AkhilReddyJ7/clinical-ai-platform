@@ -13,9 +13,10 @@ class ValidationOutput:
 class ValidationPipeline(ABC):
     """Interface for validating extracted document fields.
 
-    A future PHI-detection pass or clinical rules engine implements this
-    same signature and can replace RequiredFieldsValidator without changing
-    callers.
+    A future clinical rules engine implements this same signature and can
+    replace or compose with the existing validators (RequiredFieldsValidator,
+    PHIDetectionValidator) without changing callers — see
+    CompositeValidationPipeline for running several together.
     """
 
     @abstractmethod

@@ -18,7 +18,8 @@ apps/
 modules/
   ingestion/      document registry, upload handling, storage abstraction
   ocr/            extraction pipeline interface (+ mock implementation)
-  validation/     validation pipeline interface (+ a baseline rule set)
+  validation/     validation pipeline interface (required-fields rule +
+                   PHI-pattern guardrail, composed together)
   auth/           static API-key auth (X-API-Key header) on /documents/*
   audit/ analytics/ indexing/ layout/ search/         reserved for future work
 
@@ -37,8 +38,11 @@ implementation behind it:
   `MockExtractionPipeline` (deterministic synthetic fields). A real OCR/LLM
   extraction backend implements the same interface later.
 - `modules.validation.base.ValidationPipeline` — implemented today by
-  `RequiredFieldsValidator`. A PHI-detection pass or clinical rules engine
-  implements the same interface later.
+  `RequiredFieldsValidator` (data completeness) and `PHIDetectionValidator`
+  (regex-based guardrail for SSN/email/phone-shaped patterns), run together
+  via `CompositeValidationPipeline`. A clinical rules engine, or a more
+  robust PHI detector (e.g. Microsoft Presidio), implements the same
+  interface and composes in alongside them later.
 - `modules.ingestion.storage.StorageBackend` — implemented today by
   `LocalFileStorage`. An S3/GCS-backed implementation plugs in later without
   touching callers.
@@ -158,8 +162,8 @@ Tests don't require Postgres or Docker — they run against an in-memory
 SQLite database and a temp-directory storage backend via dependency
 overrides (`tests/conftest.py`). Coverage: health, upload, registry
 (list/get), pagination, status transitions, the mock extraction pipeline,
-the validation pipeline, and auth (missing/wrong/correct key, fail-closed
-with no keys configured).
+required-fields and PHI-pattern validation (individually and composed),
+and auth (missing/wrong/correct key, fail-closed with no keys configured).
 
 ## Continuous integration
 
@@ -170,11 +174,14 @@ Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
   `pyproject.toml`. No Postgres service needed — tests run against SQLite.
 - **docker** — `docker compose build`, `docker compose up --wait` (fails the
   build if either container doesn't reach its healthcheck), a smoke test
-  against `/health`, and an assertion that the `api` container isn't running
-  as root. This is the job that actually validates the thing this project
-  ships — the Python-only `test` job wouldn't have caught a broken
-  Dockerfile, a bad `docker-compose.yml`, or the app regressing back to
-  running as root.
+  against `/health`, an assertion that the `api` container isn't running as
+  root, and a full upload → process smoke test against the live stack (auth
+  header, real file write to the named volume, real Postgres). This is the
+  job that actually validates the thing this project ships — the
+  Python-only `test` job wouldn't have caught a broken Dockerfile, a bad
+  `docker-compose.yml`, the app regressing back to running as root, or the
+  named-volume permission bug the upload smoke test was added specifically
+  to catch (see `docs/adr/0009-...`).
 
 ## API examples
 
@@ -275,6 +282,11 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
 - **No real PHI.** The extraction pipeline is a mock that returns
   deterministic, clearly-synthetic field values (see
   `modules/ocr/mock.py`) — never point this at real patient data.
+- **PHI detection is a lightweight guardrail, not a compliance control.**
+  `PHIDetectionValidator` is regex-based pattern matching (SSN/email/phone
+  shapes) — no NER, no name or address recognition. It exists to catch
+  obvious accidental real-PHI ingestion once a real OCR backend lands, not
+  to certify a document is PHI-free. See `docs/adr/0008-...`.
 - **Auth is a shared static key, not identity.** `X-API-Key` gates
   `/documents*` but there's no concept of a user, session, or per-caller
   audit trail yet — anyone with the key has full access. Real identity,

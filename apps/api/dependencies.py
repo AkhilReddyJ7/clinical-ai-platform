@@ -4,6 +4,8 @@ from modules.ingestion.storage import LocalFileStorage, StorageBackend
 from modules.ocr.base import ExtractionPipeline
 from modules.ocr.mock import MockExtractionPipeline
 from modules.validation.base import ValidationPipeline
+from modules.validation.composite import CompositeValidationPipeline
+from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
 from shared.config.settings import get_settings
 
@@ -21,4 +23,4 @@ def get_extraction_pipeline() -> ExtractionPipeline:
 
 @lru_cache
 def get_validation_pipeline() -> ValidationPipeline:
-    return RequiredFieldsValidator()
+    return CompositeValidationPipeline([RequiredFieldsValidator(), PHIDetectionValidator()])

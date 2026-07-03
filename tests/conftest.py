@@ -21,6 +21,8 @@ from modules.ingestion.storage import LocalFileStorage
 from modules.ocr import models as ocr_models  # noqa: F401  (registers ORM table)
 from modules.ocr.mock import MockExtractionPipeline
 from modules.validation import models as validation_models  # noqa: F401  (registers ORM table)
+from modules.validation.composite import CompositeValidationPipeline
+from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
 from shared.database.base import Base
 from shared.database.session import get_db
@@ -60,7 +62,9 @@ def client(
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_storage] = lambda: test_storage
     app.dependency_overrides[get_extraction_pipeline] = lambda: MockExtractionPipeline()
-    app.dependency_overrides[get_validation_pipeline] = lambda: RequiredFieldsValidator()
+    app.dependency_overrides[get_validation_pipeline] = lambda: CompositeValidationPipeline(
+        [RequiredFieldsValidator(), PHIDetectionValidator()]
+    )
     app.dependency_overrides[get_valid_api_keys] = lambda: frozenset({TEST_API_KEY})
 
     # No `with` block: skips the app's lifespan (which targets the real

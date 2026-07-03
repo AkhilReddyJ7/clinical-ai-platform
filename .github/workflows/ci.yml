@@ -56,6 +56,17 @@ jobs:
           echo "api container user: $user"
           [ "$user" != "root" ]
 
+      - name: Smoke test upload + process against the real stack
+        run: |
+          echo "synthetic ci smoke test note" > /tmp/ci-smoke.txt
+          doc=$(curl -sf -H "X-API-Key: local-dev-key" \
+            -F "file=@/tmp/ci-smoke.txt;type=text/plain" \
+            http://localhost:8000/documents)
+          echo "upload response: $doc"
+          doc_id=$(echo "$doc" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          curl -sf -H "X-API-Key: local-dev-key" -X POST \
+            "http://localhost:8000/documents/$doc_id/process" | grep -q '"status":"validated"'
+
       - name: Show logs on failure
         if: failure()
         run: docker compose logs
