@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.api.dependencies import get_extraction_pipeline, get_storage, get_validation_pipeline
 from apps.api.main import app
+from modules.auth.api_key import get_valid_api_keys
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
 from modules.ingestion.storage import LocalFileStorage
 from modules.ocr import models as ocr_models  # noqa: F401  (registers ORM table)
@@ -25,6 +26,7 @@ from shared.database.base import Base
 from shared.database.session import get_db
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+TEST_API_KEY = "test-api-key"
 
 
 @pytest_asyncio.fixture
@@ -59,10 +61,11 @@ def client(
     app.dependency_overrides[get_storage] = lambda: test_storage
     app.dependency_overrides[get_extraction_pipeline] = lambda: MockExtractionPipeline()
     app.dependency_overrides[get_validation_pipeline] = lambda: RequiredFieldsValidator()
+    app.dependency_overrides[get_valid_api_keys] = lambda: frozenset({TEST_API_KEY})
 
     # No `with` block: skips the app's lifespan (which targets the real
     # Postgres engine) so tests don't require a running database.
-    test_client = TestClient(app)
+    test_client = TestClient(app, headers={"X-API-Key": TEST_API_KEY})
     yield test_client
 
     app.dependency_overrides.clear()

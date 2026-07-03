@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_extraction_pipeline, get_storage, get_validation_pipeline
 from apps.api.schemas import DocumentListOut, ProcessingResultOut
+from modules.auth.api_key import require_api_key
 from modules.ingestion import service as ingestion_service
 from modules.ingestion.models import DocumentStatus
 from modules.ingestion.schemas import DocumentOut
@@ -21,7 +22,7 @@ from shared.database.session import get_db
 from shared.logging.logger import logger
 
 settings = get_settings()
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(require_api_key)])
 
 ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "text/plain"}
 

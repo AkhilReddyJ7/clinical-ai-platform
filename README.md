@@ -5,8 +5,8 @@
 A document intelligence platform for clinical documents: upload, track, and run
 documents through an extraction + validation pipeline.
 
-This is an early-stage local MVP. It is **not** HIPAA-compliant, has no auth,
-and uses only synthetic data — see [Status & constraints](#status--constraints).
+This is an early-stage local MVP. It is **not** HIPAA-compliant and uses only
+synthetic data — see [Status & constraints](#status--constraints).
 
 ## Architecture
 
@@ -19,7 +19,8 @@ modules/
   ingestion/      document registry, upload handling, storage abstraction
   ocr/            extraction pipeline interface (+ mock implementation)
   validation/     validation pipeline interface (+ a baseline rule set)
-  auth/ audit/ analytics/ indexing/ layout/ search/   reserved for future work
+  auth/           static API-key auth (X-API-Key header) on /documents/*
+  audit/ analytics/ indexing/ layout/ search/         reserved for future work
 
 shared/
   config/         centralized Settings (env-driven)
@@ -83,6 +84,27 @@ process is running — it returns `503` with `"status": "unhealthy"` if
 Postgres is unreachable, so it's meaningful as a Docker/orchestrator health
 probe rather than always reporting healthy.
 
+## Authentication
+
+Every `/documents*` endpoint requires an `X-API-Key` header; `/` and
+`/health` do not (so orchestrator/monitoring probes don't need a
+credential). The local dev default is `local-dev-key` (see `.env.example`);
+override `API_KEYS` (comma-separated for multiple valid keys) via `.env` for
+anything beyond local dev, and never commit real keys.
+
+```bash
+curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents
+```
+
+Missing or wrong key → `401`. No keys configured at all → `503` (fails
+closed rather than silently allowing every request through).
+
+This is deliberately a single shared static key, not per-user identity —
+enough to gate these endpoints before Sprint 2 adds anything that costs
+money per call (real OCR, LLM extraction) or exposes more data (RAG/search).
+Per-user auth, sessions, and audit trails are future work
+(`modules/auth/`, `modules/audit/`).
+
 ## Local development without Docker
 
 Requires [uv](https://docs.astral.sh/uv/) and a running Postgres reachable at
@@ -135,8 +157,9 @@ make test
 Tests don't require Postgres or Docker — they run against an in-memory
 SQLite database and a temp-directory storage backend via dependency
 overrides (`tests/conftest.py`). Coverage: health, upload, registry
-(list/get), status transitions, the mock extraction pipeline, and the
-validation pipeline.
+(list/get), pagination, status transitions, the mock extraction pipeline,
+the validation pipeline, and auth (missing/wrong/correct key, fail-closed
+with no keys configured).
 
 ## Continuous integration
 
@@ -155,10 +178,15 @@ Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
 
 ## API examples
 
+All `/documents*` calls below need `-H "X-API-Key: local-dev-key"` (or your
+configured key) — omitted from response bodies for brevity, not from the
+requests themselves.
+
 **Upload a document**
 
 ```bash
 curl -X POST http://localhost:8000/documents \
+  -H "X-API-Key: local-dev-key" \
   -F "file=@sample_note.txt;type=text/plain"
 ```
 
@@ -180,7 +208,7 @@ Supported content types: `application/pdf`, `image/png`, `image/jpeg`,
 **List the document registry**
 
 ```bash
-curl "http://localhost:8000/documents?limit=20&offset=0"
+curl -H "X-API-Key: local-dev-key" "http://localhost:8000/documents?limit=20&offset=0"
 ```
 
 ```json
@@ -198,13 +226,13 @@ Paginated, most recently uploaded first. `limit` defaults to 20 (max 100),
 **Get a single document's status**
 
 ```bash
-curl http://localhost:8000/documents/{document_id}
+curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}
 ```
 
 **Run the extraction + validation pipeline**
 
 ```bash
-curl -X POST http://localhost:8000/documents/{document_id}/process
+curl -X POST -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}/process
 ```
 
 Runs the mock OCR/extraction pipeline against the stored file, then the
@@ -214,7 +242,7 @@ advances the document's status to `validated` or `failed`.
 **Fetch the processing result**
 
 ```bash
-curl http://localhost:8000/documents/{document_id}/result
+curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}/result
 ```
 
 Returns the document, its `ExtractionResult`, and its `ValidationResult`
@@ -223,18 +251,21 @@ together. Returns `404` if the document hasn't been processed yet.
 ## End-to-end demo flow
 
 ```bash
+API_KEY=local-dev-key
+
 # 1. upload
 DOC_ID=$(curl -s -X POST http://localhost:8000/documents \
+  -H "X-API-Key: $API_KEY" \
   -F "file=@sample_note.txt;type=text/plain" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 
 # 2. confirm it's in the registry
-curl -s http://localhost:8000/documents/$DOC_ID | python3 -m json.tool
+curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID | python3 -m json.tool
 
 # 3. run it through extraction + validation
-curl -s -X POST http://localhost:8000/documents/$DOC_ID/process | python3 -m json.tool
+curl -s -X POST -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/process | python3 -m json.tool
 
 # 4. fetch the result later
-curl -s http://localhost:8000/documents/$DOC_ID/result | python3 -m json.tool
+curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result | python3 -m json.tool
 ```
 
 ## Status & constraints
@@ -244,8 +275,10 @@ curl -s http://localhost:8000/documents/$DOC_ID/result | python3 -m json.tool
 - **No real PHI.** The extraction pipeline is a mock that returns
   deterministic, clearly-synthetic field values (see
   `modules/ocr/mock.py`) — never point this at real patient data.
-- **No auth yet.** All endpoints are unauthenticated; `modules/auth` is a
-  placeholder for future work.
+- **Auth is a shared static key, not identity.** `X-API-Key` gates
+  `/documents*` but there's no concept of a user, session, or per-caller
+  audit trail yet — anyone with the key has full access. Real identity,
+  scoped permissions, and audit logging are future work (`modules/audit`).
 - Extraction, validation, and storage are all interchangeable behind their
   respective interfaces — extending toward real OCR, RAG-based retrieval, PHI
   detection, or LLM-based extraction means adding a new implementation, not

@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     storage_root: str = "./data/uploads"
     max_upload_size_bytes: int = 25 * 1024 * 1024
 
+    # Comma-separated list of valid X-API-Key values. Local/dev-only default
+    # below — generate real keys and set them via .env (gitignored) for
+    # anything beyond a local docker compose run; never commit real keys.
+    api_keys: str = "local-dev-key"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
