@@ -50,3 +50,16 @@ just a size-arithmetic assertion.
 - Chunk size (1 MiB) is a hardcoded implementation constant, not a
   `Settings` field — an internal streaming detail, not something a
   deployment should need to tune.
+
+  **Correction (see [0017](0017-reject-unauthenticated-requests-before-body-read.md)):**
+  the "never buffers more than roughly one chunk past the limit" framing
+  above is less complete than it reads. `_read_upload_within_limit` only
+  runs *inside* the endpoint body, after FastAPI has already resolved the
+  `UploadFile` parameter — which requires Starlette to have already fully
+  received and spooled the entire body first, regardless of size, for
+  *both* authenticated and unauthenticated requests. This fix genuinely
+  avoids a second full in-memory copy on top of what Starlette already
+  buffered, and (via 0017) unauthenticated oversized requests are now
+  rejected before any of that happens — but an authenticated oversized
+  upload still pays the full transfer-and-spool cost before this code's
+  413 ever fires. Left as residual, named risk in 0017, not solved here.

@@ -113,7 +113,13 @@ curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents
 ```
 
 Missing or wrong key → `401`. No keys configured at all → `503` (fails
-closed rather than silently allowing every request through).
+closed rather than silently allowing every request through). Enforced by
+an ASGI middleware (`modules/auth/middleware.py`) that runs before
+FastAPI's routing — not just a route dependency — specifically so an
+unauthenticated caller can't force the server to receive a large request
+body before being rejected. Measured directly: before this, an
+unauthenticated 100MB upload took ~260ms to reject (the body was already
+fully received); after, ~10ms. See `docs/adr/0017-...`.
 
 This is deliberately a single shared static key, not per-user identity —
 enough to gate these endpoints before Sprint 2 adds anything that costs
@@ -243,8 +249,11 @@ curl -X POST http://localhost:8000/documents \
 Supported content types: `application/pdf`, `image/png`, `image/jpeg`,
 `text/plain`. Max upload size: 25MB (`MAX_UPLOAD_SIZE_BYTES`), enforced by
 streaming the upload in 1 MiB chunks and rejecting as soon as the running
-total exceeds the limit (`413`) — never buffers the whole file into memory
-first to find out. See `docs/adr/0014-...`.
+total exceeds the limit (`413`), avoiding a second full in-memory copy —
+though an authenticated oversized upload still costs a full network
+transfer before that check runs, a known residual limitation. An
+*unauthenticated* one is rejected before any transfer at all. See
+`docs/adr/0014-...` and `docs/adr/0017-...`.
 
 **List the document registry**
 

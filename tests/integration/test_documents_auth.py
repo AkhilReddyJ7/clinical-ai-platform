@@ -1,7 +1,8 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from modules.auth.api_key import get_valid_api_keys
+from shared.config.settings import get_settings
 
 
 def test_documents_endpoint_accepts_correct_api_key(client: TestClient) -> None:
@@ -22,8 +23,13 @@ def test_documents_endpoint_rejects_wrong_api_key(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_documents_endpoint_fails_closed_when_no_keys_configured(client: TestClient) -> None:
-    app.dependency_overrides[get_valid_api_keys] = lambda: frozenset()
+def test_documents_endpoint_fails_closed_when_no_keys_configured(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Settings mutation, not a dependency override — see the `client`
+    # fixture's comment on why (ApiKeyGateMiddleware bypasses
+    # dependency_overrides by design).
+    monkeypatch.setattr(get_settings(), "api_keys", "")
     response = client.get("/documents")
     assert response.status_code == 503
 

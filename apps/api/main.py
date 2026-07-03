@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.routers.documents import router as documents_router
+from modules.auth.middleware import ApiKeyGateMiddleware
 from shared.config.settings import get_settings
 from shared.database.session import get_db
 from shared.logging.logger import configure_logging, logger
@@ -37,6 +38,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(ApiKeyGateMiddleware, protected_prefix="/documents")
 app.include_router(documents_router)
 
 

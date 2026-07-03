@@ -15,7 +15,6 @@ from sqlalchemy.pool import StaticPool
 
 from apps.api.dependencies import get_extraction_pipeline, get_storage, get_validation_pipeline
 from apps.api.main import app
-from modules.auth.api_key import get_valid_api_keys
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
 from modules.ingestion.storage import LocalFileStorage
 from modules.ocr import models as ocr_models  # noqa: F401  (registers ORM table)
@@ -24,6 +23,7 @@ from modules.validation import models as validation_models  # noqa: F401  (regis
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
+from shared.config.settings import get_settings
 from shared.database.base import Base
 from shared.database.session import get_db
 
@@ -51,7 +51,9 @@ def session_factory(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 @pytest.fixture
 def client(
-    session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
@@ -65,7 +67,13 @@ def client(
     app.dependency_overrides[get_validation_pipeline] = lambda: CompositeValidationPipeline(
         [RequiredFieldsValidator(), PHIDetectionValidator()]
     )
-    app.dependency_overrides[get_valid_api_keys] = lambda: frozenset({TEST_API_KEY})
+    # Mutates the actual Settings singleton rather than overriding a
+    # FastAPI dependency: ApiKeyGateMiddleware (modules/auth/middleware.py)
+    # reads get_valid_api_keys() directly as a plain function call, bypassing
+    # app.dependency_overrides entirely by design (it runs before FastAPI's
+    # routing/DI layer even starts) — this is the one thing both it and the
+    # require_api_key route dependency actually share.
+    monkeypatch.setattr(get_settings(), "api_keys", TEST_API_KEY)
 
     # No `with` block: skips the app's lifespan (which targets the real
     # Postgres engine) so tests don't require a running database.
