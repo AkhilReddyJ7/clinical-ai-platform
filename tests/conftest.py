@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -61,6 +62,26 @@ def client(
 
     # No `with` block: skips the app's lifespan (which targets the real
     # Postgres engine) so tests don't require a running database.
+    test_client = TestClient(app)
+    yield test_client
+
+    app.dependency_overrides.clear()
+
+
+class _UnreachableSession:
+    """Stand-in for AsyncSession that fails like a dropped DB connection."""
+
+    async def execute(self, *args: object, **kwargs: object) -> None:
+        raise SQLAlchemyError("simulated database connectivity failure")
+
+
+@pytest.fixture
+def unhealthy_db_client() -> Iterator[TestClient]:
+    async def override_get_db() -> AsyncIterator[_UnreachableSession]:
+        yield _UnreachableSession()
+
+    app.dependency_overrides[get_db] = override_get_db
+
     test_client = TestClient(app)
     yield test_client
 

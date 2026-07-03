@@ -67,7 +67,8 @@ docker compose up --build
 ```
 
 This starts:
-- `api` — FastAPI app on `http://localhost:8000`
+- `api` — FastAPI app on `http://localhost:8000`, with its own Docker
+  healthcheck hitting `/health`
 - `postgres` — Postgres 16, with a named volume for data and another for
   uploaded files (`uploads_data`, mounted at `/app/data/uploads`)
 
@@ -76,6 +77,11 @@ Check it's up:
 ```bash
 curl http://localhost:8000/health
 ```
+
+`/health` checks live database connectivity (`SELECT 1`), not just that the
+process is running — it returns `503` with `"status": "unhealthy"` if
+Postgres is unreachable, so it's meaningful as a Docker/orchestrator health
+probe rather than always reporting healthy.
 
 ## Local development without Docker
 
