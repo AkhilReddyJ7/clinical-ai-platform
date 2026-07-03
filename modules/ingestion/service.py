@@ -42,9 +42,7 @@ async def get_document(db: AsyncSession, document_id: uuid.UUID) -> Document | N
     return await db.get(Document, document_id)
 
 
-async def update_status(
-    db: AsyncSession, document: Document, status: DocumentStatus
-) -> Document:
+async def update_status(db: AsyncSession, document: Document, status: DocumentStatus) -> Document:
     document.status = status
     await db.commit()
     await db.refresh(document)

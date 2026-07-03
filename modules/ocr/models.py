@@ -17,6 +17,6 @@ class ExtractionResult(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
     raw_text: Mapped[str] = mapped_column(Text)
-    fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    fields: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

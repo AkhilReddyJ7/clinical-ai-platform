@@ -1,7 +1,7 @@
 from modules.ocr.mock import MockExtractionPipeline
 
 
-def test_mock_extraction_returns_synthetic_fields():
+def test_mock_extraction_returns_synthetic_fields() -> None:
     pipeline = MockExtractionPipeline()
     output = pipeline.extract(data=b"sample clinical note content", content_type="text/plain")
 
@@ -11,14 +11,14 @@ def test_mock_extraction_returns_synthetic_fields():
     assert output.fields["document_type"] == "text/plain"
 
 
-def test_mock_extraction_is_deterministic_per_input():
+def test_mock_extraction_is_deterministic_per_input() -> None:
     pipeline = MockExtractionPipeline()
     first = pipeline.extract(data=b"same bytes", content_type="text/plain")
     second = pipeline.extract(data=b"same bytes", content_type="text/plain")
     assert first.fields == second.fields
 
 
-def test_mock_extraction_handles_empty_input():
+def test_mock_extraction_handles_empty_input() -> None:
     pipeline = MockExtractionPipeline()
     output = pipeline.extract(data=b"", content_type="text/plain")
 

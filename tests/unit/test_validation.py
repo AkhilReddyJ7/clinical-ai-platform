@@ -2,7 +2,7 @@ from modules.ocr.base import ExtractionOutput
 from modules.validation.rules import RequiredFieldsValidator
 
 
-def test_validation_passes_when_required_fields_present():
+def test_validation_passes_when_required_fields_present() -> None:
     validator = RequiredFieldsValidator()
     extraction = ExtractionOutput(
         raw_text="...",
@@ -20,7 +20,7 @@ def test_validation_passes_when_required_fields_present():
     assert result.issues == []
 
 
-def test_validation_fails_when_fields_missing():
+def test_validation_fails_when_fields_missing() -> None:
     validator = RequiredFieldsValidator()
     extraction = ExtractionOutput(raw_text="", fields={}, confidence=0.0)
 

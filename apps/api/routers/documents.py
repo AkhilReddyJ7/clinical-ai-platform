@@ -65,9 +65,7 @@ async def list_documents(db: AsyncSession = Depends(get_db)) -> list[DocumentOut
 
 
 @router.get("/{document_id}", response_model=DocumentOut)
-async def get_document(
-    document_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> DocumentOut:
+async def get_document(document_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> DocumentOut:
     document = await ingestion_service.get_document(db, document_id)
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
@@ -89,9 +87,7 @@ async def process_document(
     await ingestion_service.update_status(db, document, DocumentStatus.PROCESSING)
 
     data = storage.read(document.storage_key)
-    extraction_output = extraction_pipeline.extract(
-        data=data, content_type=document.content_type
-    )
+    extraction_output = extraction_pipeline.extract(data=data, content_type=document.content_type)
 
     extraction = ExtractionResult(
         document_id=document.id,
@@ -113,9 +109,7 @@ async def process_document(
     await db.refresh(extraction)
     await db.refresh(validation)
 
-    final_status = (
-        DocumentStatus.VALIDATED if validation_output.is_valid else DocumentStatus.FAILED
-    )
+    final_status = DocumentStatus.VALIDATED if validation_output.is_valid else DocumentStatus.FAILED
     document = await ingestion_service.update_status(db, document, final_status)
 
     logger.info(

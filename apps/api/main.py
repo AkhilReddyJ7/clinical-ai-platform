@@ -36,12 +36,12 @@ app.include_router(documents_router)
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, str]:
     return {"message": f"Welcome to the {settings.app_name}"}
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, str]:
     return {
         "status": "healthy",
         "service": settings.app_name,

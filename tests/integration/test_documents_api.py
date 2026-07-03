@@ -1,7 +1,9 @@
 import uuid
 
+from fastapi.testclient import TestClient
 
-def test_upload_creates_document_in_registry(client):
+
+def test_upload_creates_document_in_registry(client: TestClient) -> None:
     response = client.post(
         "/documents",
         files={"file": ("note.txt", b"synthetic clinical note", "text/plain")},
@@ -21,7 +23,7 @@ def test_upload_creates_document_in_registry(client):
     assert get_response.json()["id"] == body["id"]
 
 
-def test_upload_rejects_unsupported_content_type(client):
+def test_upload_rejects_unsupported_content_type(client: TestClient) -> None:
     response = client.post(
         "/documents",
         files={"file": ("note.exe", b"binary", "application/octet-stream")},
@@ -29,7 +31,7 @@ def test_upload_rejects_unsupported_content_type(client):
     assert response.status_code == 415
 
 
-def test_upload_rejects_empty_file(client):
+def test_upload_rejects_empty_file(client: TestClient) -> None:
     response = client.post(
         "/documents",
         files={"file": ("empty.txt", b"", "text/plain")},
@@ -37,12 +39,12 @@ def test_upload_rejects_empty_file(client):
     assert response.status_code == 400
 
 
-def test_get_unknown_document_returns_404(client):
+def test_get_unknown_document_returns_404(client: TestClient) -> None:
     response = client.get(f"/documents/{uuid.uuid4()}")
     assert response.status_code == 404
 
 
-def test_process_document_runs_extraction_and_validation(client):
+def test_process_document_runs_extraction_and_validation(client: TestClient) -> None:
     upload = client.post(
         "/documents",
         files={"file": ("note.txt", b"synthetic clinical note content", "text/plain")},
@@ -62,12 +64,12 @@ def test_process_document_runs_extraction_and_validation(client):
     assert result_response.json()["document"]["id"] == document_id
 
 
-def test_process_unknown_document_returns_404(client):
+def test_process_unknown_document_returns_404(client: TestClient) -> None:
     response = client.post(f"/documents/{uuid.uuid4()}/process")
     assert response.status_code == 404
 
 
-def test_result_before_processing_returns_404(client):
+def test_result_before_processing_returns_404(client: TestClient) -> None:
     upload = client.post(
         "/documents",
         files={"file": ("note2.txt", b"another synthetic note", "text/plain")},
