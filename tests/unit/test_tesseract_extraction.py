@@ -9,6 +9,8 @@ from modules.ocr.base import ExtractionError
 from modules.ocr.mock import synthesize_fields
 from modules.ocr.tesseract import TesseractExtractionPipeline, _ocr_pil_image
 
+_UNLIMITED_PAGES = 10_000
+
 
 def test_empty_data_returns_empty_output() -> None:
     pipeline = TesseractExtractionPipeline()
@@ -99,7 +101,9 @@ def test_ocr_pdf_joins_nonblank_pages_and_skips_blank_ones() -> None:
         "modules.ocr.tesseract.pytesseract.image_to_data",
         side_effect=lambda *args, **kwargs: next(responses),
     ):
-        raw_text, confidence = TesseractExtractionPipeline._ocr_pdf(pdf_bytes)
+        raw_text, confidence = TesseractExtractionPipeline._ocr_pdf(
+            pdf_bytes, max_pages=_UNLIMITED_PAGES
+        )
 
     assert raw_text == "Page one"
     assert confidence == pytest.approx((90 + 80) / 2 / 100.0)
@@ -112,7 +116,44 @@ def test_ocr_pdf_with_no_text_anywhere_returns_zero_confidence() -> None:
         "modules.ocr.tesseract.pytesseract.image_to_data",
         return_value={"text": [""], "conf": ["-1"]},
     ):
-        raw_text, confidence = TesseractExtractionPipeline._ocr_pdf(pdf_bytes)
+        raw_text, confidence = TesseractExtractionPipeline._ocr_pdf(
+            pdf_bytes, max_pages=_UNLIMITED_PAGES
+        )
 
     assert raw_text == ""
     assert confidence == 0.0
+
+
+def test_ocr_pdf_rejects_documents_exceeding_page_limit() -> None:
+    pdf_bytes = _tiny_pdf_bytes(page_count=5)
+    with pytest.raises(ExtractionError, match="5 pages"):
+        TesseractExtractionPipeline._ocr_pdf(pdf_bytes, max_pages=4)
+
+
+def test_ocr_pdf_accepts_documents_exactly_at_page_limit() -> None:
+    pdf_bytes = _tiny_pdf_bytes(page_count=3)
+    with patch(
+        "modules.ocr.tesseract.pytesseract.image_to_data",
+        return_value={"text": ["ok"], "conf": ["90"]},
+    ):
+        raw_text, _confidence = TesseractExtractionPipeline._ocr_pdf(pdf_bytes, max_pages=3)
+    assert raw_text  # didn't raise, actually processed the pages
+
+
+def test_decompression_bomb_raises_extraction_error_not_a_crash() -> None:
+    # Simulates an "image bomb" by lowering Pillow's pixel budget rather
+    # than generating a genuinely huge real file — DecompressionBombError
+    # isn't a subclass of UnidentifiedImageError, so this is a distinct
+    # code path from test_corrupted_image_raises_extraction_error_not_a_crash.
+    original_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = 100
+    try:
+        img = Image.new("RGB", (50, 50), color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+
+        pipeline = TesseractExtractionPipeline()
+        with pytest.raises(ExtractionError):
+            pipeline.extract(data=buf.getvalue(), content_type="image/png")
+    finally:
+        Image.MAX_IMAGE_PIXELS = original_limit

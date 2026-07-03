@@ -298,6 +298,13 @@ including `/health` — while it runs. Measured directly: a 25-page PDF
 blocked a concurrent `/health` call for the full ~20s OCR took before this
 fix, ~0.03s after. See `docs/adr/0013-...`.
 
+PDFs over `MAX_PDF_PAGES` (default 50) are rejected immediately rather
+than processed page-by-page and failed at the end — a 51-page PDF returns
+`status: failed` in ~50ms instead of taking as long as it would to
+actually OCR every page. Unusually large or malformed images (a
+decompression-bomb-shaped file) also fail cleanly rather than crashing.
+See `docs/adr/0016-...`.
+
 **Fetch the processing result**
 
 ```bash

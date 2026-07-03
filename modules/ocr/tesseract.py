@@ -28,6 +28,9 @@ class TesseractExtractionPipeline(ExtractionPipeline):
     on the pipeline ignoring it — see docs/adr for the tradeoff.
     """
 
+    def __init__(self, *, max_pdf_pages: int = 50) -> None:
+        self._max_pdf_pages = max_pdf_pages
+
     def extract(self, *, data: bytes, content_type: str) -> ExtractionOutput:
         if not data:
             return ExtractionOutput(raw_text="", fields={}, confidence=0.0)
@@ -37,7 +40,7 @@ class TesseractExtractionPipeline(ExtractionPipeline):
         elif content_type in ("image/png", "image/jpeg"):
             raw_text, confidence = self._ocr_image(data)
         elif content_type == "application/pdf":
-            raw_text, confidence = self._ocr_pdf(data)
+            raw_text, confidence = self._ocr_pdf(data, max_pages=self._max_pdf_pages)
         else:
             raise ValueError(f"unsupported content type for OCR: {content_type}")
 
@@ -49,16 +52,25 @@ class TesseractExtractionPipeline(ExtractionPipeline):
         try:
             with Image.open(io.BytesIO(data)) as image:
                 return _ocr_pil_image(image)
-        except UnidentifiedImageError as exc:
+        except (UnidentifiedImageError, Image.DecompressionBombError) as exc:
+            # DecompressionBombError isn't a subclass of
+            # UnidentifiedImageError (verified) — a huge-pixel-count image
+            # (accidental or a deliberate "image bomb") would otherwise
+            # propagate uncaught, same failure class as ADR-0012.
             raise ExtractionError(f"could not read image data: {exc}") from exc
 
     @staticmethod
-    def _ocr_pdf(data: bytes) -> tuple[str, float]:
+    def _ocr_pdf(data: bytes, *, max_pages: int) -> tuple[str, float]:
         try:
             pdf = pdfium.PdfDocument(data)
         except PdfiumError as exc:
             raise ExtractionError(f"could not read PDF data: {exc}") from exc
         try:
+            page_count = len(pdf)
+            if page_count > max_pages:
+                raise ExtractionError(
+                    f"PDF has {page_count} pages, exceeding the {max_pages}-page limit"
+                )
             page_texts: list[str] = []
             confidences: list[float] = []
             for page in pdf:

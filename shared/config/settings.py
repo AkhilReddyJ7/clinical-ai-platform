@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     storage_root: str = "./data/uploads"
     max_upload_size_bytes: int = 25 * 1024 * 1024
 
+    # Caps per-document OCR cost: each page is rasterized and OCR'd
+    # synchronously (in a threadpool worker, see docs/adr/0013), so an
+    # unbounded page count is an unbounded per-request resource cost. Real
+    # clinical documents are rarely more than a few dozen pages.
+    max_pdf_pages: int = 50
+
     # Comma-separated list of valid X-API-Key values. Local/dev-only default
     # below — generate real keys and set them via .env (gitignored) for
     # anything beyond a local docker compose run; never commit real keys.

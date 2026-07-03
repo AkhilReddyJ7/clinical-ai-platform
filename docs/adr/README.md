@@ -21,3 +21,4 @@ follows: Status, Context, Decision, Consequences.
 | [0013](0013-run-extraction-off-the-event-loop.md) | Run extraction (and storage reads) off the event loop | Accepted |
 | [0014](0014-stream-upload-size-enforcement.md) | Stream-enforce upload size limits instead of buffer-then-check | Accepted |
 | [0015](0015-phi-detection-re-evaluation-and-pattern-expansion.md) | PHI detection re-evaluation and pattern expansion | Accepted |
+| [0016](0016-cap-per-document-ocr-resource-cost.md) | Cap per-document OCR resource cost | Accepted |
