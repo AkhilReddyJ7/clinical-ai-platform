@@ -1,0 +1,187 @@
+# Clinical AI Intelligence Platform
+
+A document intelligence platform for clinical documents: upload, track, and run
+documents through an extraction + validation pipeline.
+
+This is an early-stage local MVP. It is **not** HIPAA-compliant, has no auth,
+and uses only synthetic data — see [Status & constraints](#status--constraints).
+
+## Architecture
+
+```
+apps/
+  api/            FastAPI app: HTTP layer, routing, dependency wiring
+  worker/         reserved for a future async processing worker
+
+modules/
+  ingestion/      document registry, upload handling, storage abstraction
+  ocr/            extraction pipeline interface (+ mock implementation)
+  validation/     validation pipeline interface (+ a baseline rule set)
+  auth/ audit/ analytics/ indexing/ layout/ search/   reserved for future work
+
+shared/
+  config/         centralized Settings (env-driven)
+  logging/        centralized logging setup
+  database/       SQLAlchemy async engine/session, declarative Base
+```
+
+Each pipeline stage is defined as an abstract interface with a concrete
+implementation behind it:
+
+- `modules.ocr.base.ExtractionPipeline` — implemented today by
+  `MockExtractionPipeline` (deterministic synthetic fields). A real OCR/LLM
+  extraction backend implements the same interface later.
+- `modules.validation.base.ValidationPipeline` — implemented today by
+  `RequiredFieldsValidator`. A PHI-detection pass or clinical rules engine
+  implements the same interface later.
+- `modules.ingestion.storage.StorageBackend` — implemented today by
+  `LocalFileStorage`. An S3/GCS-backed implementation plugs in later without
+  touching callers.
+
+This keeps the upload → extract → validate flow swappable at each stage
+without changing the API layer.
+
+### Data model
+
+- **Document** (`documents` table) — registry entry: filename, content type,
+  size, storage key, and a processing `status`
+  (`uploaded → processing → extracted → validated|failed`).
+- **ExtractionResult** (`extraction_results` table) — output of the
+  extraction pipeline for a document (raw text, structured fields,
+  confidence).
+- **ValidationResult** (`validation_results` table) — output of the
+  validation pipeline (pass/fail + issues list).
+
+Tables are created automatically on API startup via
+`Base.metadata.create_all` — there's no migration tool yet (Alembic would be
+the natural next addition once the schema needs to evolve under real data).
+
+## Quickstart (Docker Compose)
+
+```bash
+cp .env.example .env   # optional: local dev defaults work out of the box
+docker compose up --build
+```
+
+This starts:
+- `api` — FastAPI app on `http://localhost:8000`
+- `postgres` — Postgres 16, with a named volume for data and another for
+  uploaded files (`uploads_data`, mounted at `/app/data/uploads`)
+
+Check it's up:
+
+```bash
+curl http://localhost:8000/health
+```
+
+## Local development without Docker
+
+Requires [uv](https://docs.astral.sh/uv/) and a running Postgres reachable at
+`DATABASE_URL` (defaults to `postgresql+asyncpg://postgres:postgres@localhost:5432/clinical_ai`).
+
+```bash
+uv sync
+uv run uvicorn apps.api.main:app --reload
+```
+
+## Running tests
+
+```bash
+uv run pytest
+# or
+make test
+```
+
+Tests don't require Postgres or Docker — they run against an in-memory
+SQLite database and a temp-directory storage backend via dependency
+overrides (`tests/conftest.py`). Coverage: health, upload, registry
+(list/get), status transitions, the mock extraction pipeline, and the
+validation pipeline.
+
+## API examples
+
+**Upload a document**
+
+```bash
+curl -X POST http://localhost:8000/documents \
+  -F "file=@sample_note.txt;type=text/plain"
+```
+
+```json
+{
+  "id": "9acadc34-1f91-4475-9f4b-9fa7425b9082",
+  "filename": "sample_note.txt",
+  "content_type": "text/plain",
+  "size_bytes": 74,
+  "status": "uploaded",
+  "created_at": "2026-07-03T18:21:17.529476Z",
+  "updated_at": "2026-07-03T18:21:17.529479Z"
+}
+```
+
+Supported content types: `application/pdf`, `image/png`, `image/jpeg`,
+`text/plain`. Max upload size: 25MB (`MAX_UPLOAD_SIZE_BYTES`).
+
+**List the document registry**
+
+```bash
+curl http://localhost:8000/documents
+```
+
+**Get a single document's status**
+
+```bash
+curl http://localhost:8000/documents/{document_id}
+```
+
+**Run the extraction + validation pipeline**
+
+```bash
+curl -X POST http://localhost:8000/documents/{document_id}/process
+```
+
+Runs the mock OCR/extraction pipeline against the stored file, then the
+validation pipeline against the extracted fields, persists both results, and
+advances the document's status to `validated` or `failed`.
+
+**Fetch the processing result**
+
+```bash
+curl http://localhost:8000/documents/{document_id}/result
+```
+
+Returns the document, its `ExtractionResult`, and its `ValidationResult`
+together. Returns `404` if the document hasn't been processed yet.
+
+## End-to-end demo flow
+
+```bash
+# 1. upload
+DOC_ID=$(curl -s -X POST http://localhost:8000/documents \
+  -F "file=@sample_note.txt;type=text/plain" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+
+# 2. confirm it's in the registry
+curl -s http://localhost:8000/documents/$DOC_ID | python3 -m json.tool
+
+# 3. run it through extraction + validation
+curl -s -X POST http://localhost:8000/documents/$DOC_ID/process | python3 -m json.tool
+
+# 4. fetch the result later
+curl -s http://localhost:8000/documents/$DOC_ID/result | python3 -m json.tool
+```
+
+## Status & constraints
+
+- **No HIPAA compliance claim.** This is a local development scaffold, not a
+  compliant system.
+- **No real PHI.** The extraction pipeline is a mock that returns
+  deterministic, clearly-synthetic field values (see
+  `modules/ocr/mock.py`) — never point this at real patient data.
+- **No auth yet.** All endpoints are unauthenticated; `modules/auth` is a
+  placeholder for future work.
+- **No migrations yet.** Schema changes currently require dropping and
+  recreating tables in local dev.
+- Extraction, validation, and storage are all interchangeable behind their
+  respective interfaces — extending toward real OCR, RAG-based retrieval, PHI
+  detection, or LLM-based extraction means adding a new implementation, not
+  restructuring the API.

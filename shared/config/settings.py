@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     debug: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/clinical_ai"
+    storage_root: str = "./data/uploads"
+    max_upload_size_bytes: int = 25 * 1024 * 1024
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
