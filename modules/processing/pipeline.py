@@ -36,6 +36,7 @@ issue strings, no change to `is_valid`.
 
 import math
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,10 +51,12 @@ from modules.ingestion.storage import StorageBackend
 from modules.ocr.base import ExtractionError, ExtractionOutput, ExtractionPipeline
 from modules.ocr.models import ExtractionResult
 from modules.processing.errors import TerminalProcessingError, TransientProcessingError
+from modules.processing.metrics import metrics
 from modules.processing.models import Job
 from modules.validation.base import ValidationPipeline
 from modules.validation.models import ValidationResult
 from shared.config.settings import get_settings
+from shared.logging.logger import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -198,6 +201,50 @@ def _build_metadata(
     return metadata
 
 
+def _log_stage(job: Job, document_id: uuid.UUID, stage: str, duration_seconds: float) -> None:
+    """Increment 7 observability: records + logs one pipeline stage's timing.
+
+    Purely additive — called after a stage already succeeded or failed;
+    never influences what happens next.
+    """
+    metrics.record_stage_duration(stage, duration_seconds)
+    logger.info(
+        "pipeline: stage complete job_id=%s document_id=%s stage=%s duration_seconds=%.3f",
+        job.id,
+        document_id,
+        stage,
+        duration_seconds,
+    )
+
+
+def _log_confidence_summary(job: Job, document_id: uuid.UUID, result: "ProcessingResult") -> None:
+    """Increment 7 / ADR-0025 observability: logs the confidence signals
+    already computed for this result. Read-only — runs after `result` is
+    fully built and never affects it or any state transition.
+    """
+    field_scores = list(result.field_confidence.values())
+    if field_scores:
+        distribution = (
+            f"min={min(field_scores):.3f} "
+            f"avg={sum(field_scores) / len(field_scores):.3f} "
+            f"max={max(field_scores):.3f}"
+        )
+    else:
+        distribution = "n/a"
+    threshold = get_settings().low_confidence_threshold
+    low_confidence_field_count = sum(1 for score in field_scores if score < threshold)
+
+    logger.info(
+        "pipeline: confidence summary job_id=%s document_id=%s document_confidence=%.3f "
+        "low_confidence_field_count=%d field_confidence=[%s]",
+        job.id,
+        document_id,
+        result.confidence,
+        low_confidence_field_count,
+        distribution,
+    )
+
+
 async def _persist_failure(
     db: AsyncSession,
     document: Document,
@@ -252,6 +299,8 @@ async def run_processing_pipeline(
     ends up `failed` (PHI detected, or a missing required field) — a
     failed *document* is still a completed *job*.
     """
+    pipeline_started_at = time.monotonic()
+
     document = await ingestion_service.get_document(db, job.document_id)
     if document is None:
         # Not reachable in normal operation (documents are never deleted);
@@ -259,15 +308,24 @@ async def run_processing_pipeline(
         # to, so this is unconditionally terminal.
         raise TerminalProcessingError(f"document {job.document_id} not found")
 
+    logger.info(
+        "pipeline: job claimed for processing job_id=%s document_id=%s status=%s",
+        job.id,
+        document.id,
+        job.status.value,
+    )
+
     await ingestion_service.update_status(db, document, DocumentStatus.PROCESSING)
 
     data = await run_in_threadpool(storage.read, document.storage_key)
 
+    ocr_started_at = time.monotonic()
     try:
         extraction_output = await run_in_threadpool(
             extraction_pipeline.extract, data=data, content_type=document.content_type
         )
     except (ExtractionError, ValueError) as exc:
+        _log_stage(job, document.id, "ocr", time.monotonic() - ocr_started_at)
         # ValueError alongside ExtractionError: TesseractExtractionPipeline
         # raises a bare ValueError (not ExtractionError) for a content type
         # it doesn't recognize — previously uncaught here, which meant the
@@ -283,6 +341,8 @@ async def run_processing_pipeline(
             issues=[f"extraction failed: {exc}"],
         )
         raise TerminalProcessingError(str(exc)) from exc
+    else:
+        _log_stage(job, document.id, "ocr", time.monotonic() - ocr_started_at)
 
     # PHI-check the raw OCR text before the field-extraction LLM ever sees
     # it (ADR-0011, ADR-0019) — bare PHIDetectionValidator, since fields
@@ -302,7 +362,7 @@ async def run_processing_pipeline(
             confidence=extraction_output.confidence,
         )
         # Not a failure per ADR-0023: the PHI gate did exactly its job.
-        return ProcessingResult(
+        result = ProcessingResult(
             job_id=job.id,
             document_id=document.id,
             raw_text=redacted_raw_text,
@@ -317,12 +377,19 @@ async def run_processing_pipeline(
                 extra={"outcome": "phi_detected"},
             ),
         )
+        _log_confidence_summary(job, document.id, result)
+        _log_stage(job, document.id, "pipeline_total", time.monotonic() - pipeline_started_at)
+        return result
 
+    field_extraction_started_at = time.monotonic()
     try:
         field_output = await run_in_threadpool(
             field_extraction_pipeline.extract_fields, raw_text=extraction_output.raw_text
         )
     except FieldExtractionError as exc:
+        _log_stage(
+            job, document.id, "field_extraction", time.monotonic() - field_extraction_started_at
+        )
         if _is_transient_field_extraction_error(exc):
             # Document stays `processing` (ADR-0020) and nothing is
             # persisted — a retry re-runs this whole function from
@@ -337,13 +404,19 @@ async def run_processing_pipeline(
             issues=[f"field extraction failed: {exc}"],
         )
         raise TerminalProcessingError(str(exc)) from exc
+    else:
+        _log_stage(
+            job, document.id, "field_extraction", time.monotonic() - field_extraction_started_at
+        )
 
     combined_output = ExtractionOutput(
         raw_text=extraction_output.raw_text,
         fields=field_output.fields,
         confidence=_aggregate_confidence(extraction_output.confidence, field_output.confidence),
     )
+    validation_started_at = time.monotonic()
     validation_output = validation_pipeline.validate(combined_output)
+    _log_stage(job, document.id, "validation", time.monotonic() - validation_started_at)
     field_confidence = _compute_field_confidence(combined_output.fields, combined_output.confidence)
 
     extraction = ExtractionResult(
@@ -370,7 +443,7 @@ async def run_processing_pipeline(
     final_status = DocumentStatus.VALIDATED if validation_output.is_valid else DocumentStatus.FAILED
     await ingestion_service.update_status(db, document, final_status)
 
-    return ProcessingResult(
+    result = ProcessingResult(
         job_id=job.id,
         document_id=document.id,
         raw_text=combined_output.raw_text,
@@ -389,3 +462,6 @@ async def run_processing_pipeline(
             },
         ),
     )
+    _log_confidence_summary(job, document.id, result)
+    _log_stage(job, document.id, "pipeline_total", time.monotonic() - pipeline_started_at)
+    return result

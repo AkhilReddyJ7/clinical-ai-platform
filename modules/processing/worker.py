@@ -22,6 +22,7 @@ recorded.
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any, TypeAlias
@@ -34,6 +35,7 @@ from modules.ingestion.storage import LocalFileStorage, StorageBackend
 from modules.ocr.base import ExtractionPipeline
 from modules.ocr.tesseract import TesseractExtractionPipeline
 from modules.processing.errors import is_retryable
+from modules.processing.metrics import metrics
 from modules.processing.models import Job
 from modules.processing.pipeline import ProcessingResult, run_processing_pipeline
 from modules.processing.repository import (
@@ -152,21 +154,58 @@ async def run_worker_loop(
             await asyncio.sleep(poll_interval_seconds)
             continue
 
+        metrics.record_claim()
+        logger.info(
+            "worker: job claimed job_id=%s document_id=%s status=%s",
+            job.id,
+            job.document_id,
+            job.status.value,
+        )
+        claim_started_at = time.monotonic()
+
         outcome: Job | None
+        duration: float
         try:
             await _dispatch(job, process_job_fn)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.exception("worker: error while processing job id=%s", job.id)
+            duration = time.monotonic() - claim_started_at
             async with session_factory() as session:
                 if is_retryable(exc):
                     outcome = await mark_job_retry(session, job.id)
+                    metrics.record_retry()
+                    logger.info(
+                        "worker: job retrying job_id=%s document_id=%s duration_seconds=%.3f",
+                        job.id,
+                        job.document_id,
+                        duration,
+                    )
                 else:
                     outcome = await mark_job_failed(session, job.id, str(exc))
+                    metrics.record_terminal_failure()
+                    logger.info(
+                        "worker: job failed job_id=%s document_id=%s "
+                        "duration_seconds=%.3f error=%s",
+                        job.id,
+                        job.document_id,
+                        duration,
+                        exc,
+                    )
         else:
+            duration = time.monotonic() - claim_started_at
             async with session_factory() as session:
                 outcome = await mark_job_completed(session, job.id)
+            metrics.record_completion()
+            logger.info(
+                "worker: job completed job_id=%s document_id=%s duration_seconds=%.3f",
+                job.id,
+                job.document_id,
+                duration,
+            )
+
+        metrics.record_stage_duration("job_total", duration)
 
         if outcome is None:
             logger.warning(
