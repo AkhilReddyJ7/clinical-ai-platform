@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Clinical AI Intelligence Platform"
-    app_version: str = "0.1.0"
+    app_version: str = "0.3.0"
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
