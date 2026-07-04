@@ -22,34 +22,96 @@ recorded.
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
-from typing import TypeAlias
+from collections.abc import Callable
+from functools import lru_cache
+from typing import Any, TypeAlias
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from modules.extraction.anthropic_extractor import AnthropicFieldExtractionPipeline
+from modules.extraction.base import FieldExtractionPipeline
+from modules.ingestion.storage import LocalFileStorage, StorageBackend
+from modules.ocr.base import ExtractionPipeline
+from modules.ocr.tesseract import TesseractExtractionPipeline
 from modules.processing.errors import is_retryable
 from modules.processing.models import Job
+from modules.processing.pipeline import ProcessingResult, run_processing_pipeline
 from modules.processing.repository import (
     claim_next_job,
     mark_job_completed,
     mark_job_failed,
     mark_job_retry,
 )
+from modules.validation.base import ValidationPipeline
+from modules.validation.composite import CompositeValidationPipeline
+from modules.validation.phi import PHIDetectionValidator
+from modules.validation.rules import RequiredFieldsValidator
+from shared.config.settings import get_settings
+from shared.database.session import AsyncSessionLocal
 from shared.logging.logger import logger
 
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 
-ProcessJobFn: TypeAlias = Callable[[Job], "None | Awaitable[None]"]
+# process_job_fn's return value is discarded by _dispatch below (only
+# whether it raised matters to the worker loop) — Any is the correct,
+# deliberate type here, not an oversight.
+ProcessJobFn: TypeAlias = Callable[[Job], Any]
 
 
-async def process_job(job: Job) -> None:
-    """Processing boundary stub. Deliberately does nothing but log.
+# Mirrors apps/api/dependencies.py's factory functions (same concrete
+# classes, built from the same Settings) rather than importing them
+# directly: modules/ may not depend on apps/ (ADR-0001's modular-monolith
+# layering — apps/ composes modules/, never the reverse). The worker is
+# its own composition root, exactly as the API app is its own.
+@lru_cache
+def _storage() -> StorageBackend:
+    return LocalFileStorage(get_settings().storage_root)
 
-    Real OCR / PHI-gate / field-extraction dispatch is out of scope for
-    this increment — a future increment replaces this stub, not the loop
-    that calls it.
+
+@lru_cache
+def _extraction_pipeline() -> ExtractionPipeline:
+    return TesseractExtractionPipeline(max_pdf_pages=get_settings().max_pdf_pages)
+
+
+@lru_cache
+def _field_extraction_pipeline() -> FieldExtractionPipeline:
+    settings = get_settings()
+    return AnthropicFieldExtractionPipeline(
+        api_key=settings.anthropic_api_key,
+        model=settings.anthropic_model,
+        timeout_seconds=settings.anthropic_timeout_seconds,
+        max_input_chars=settings.anthropic_max_input_chars,
+    )
+
+
+@lru_cache
+def _phi_validator() -> ValidationPipeline:
+    return PHIDetectionValidator()
+
+
+@lru_cache
+def _validation_pipeline() -> ValidationPipeline:
+    return CompositeValidationPipeline([RequiredFieldsValidator(), PHIDetectionValidator()])
+
+
+async def process_job(job: Job) -> ProcessingResult:
+    """Default processing boundary: runs the real OCR/PHI/extraction pipeline.
+
+    A thin wiring layer only — modules/processing/pipeline.py holds the
+    actual domain logic (Increment 5). Opens its own session, independent
+    of whatever session claimed the job, matching claim_next_job's own
+    fresh-session-per-call pattern.
     """
-    logger.info("worker: claimed job id=%s document_id=%s", job.id, job.document_id)
+    async with AsyncSessionLocal() as db:
+        return await run_processing_pipeline(
+            job,
+            db=db,
+            storage=_storage(),
+            extraction_pipeline=_extraction_pipeline(),
+            field_extraction_pipeline=_field_extraction_pipeline(),
+            phi_validator=_phi_validator(),
+            validation_pipeline=_validation_pipeline(),
+        )
 
 
 async def _dispatch(job: Job, process_job_fn: ProcessJobFn) -> None:
