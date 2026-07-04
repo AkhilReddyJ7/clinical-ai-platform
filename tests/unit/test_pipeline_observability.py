@@ -1,5 +1,5 @@
-import logging
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,6 +12,7 @@ from modules.ingestion.storage import LocalFileStorage
 from modules.ocr.base import ExtractionError, ExtractionOutput, ExtractionPipeline
 from modules.ocr.mock import MockExtractionPipeline
 from modules.processing.errors import TerminalProcessingError
+from modules.processing.events import Event, EventType, subscribe, unsubscribe
 from modules.processing.metrics import metrics
 from modules.processing.models import Job, JobStatus
 from modules.processing.pipeline import run_processing_pipeline
@@ -23,6 +24,14 @@ from modules.validation.rules import RequiredFieldsValidator
 @pytest.fixture(autouse=True)
 def _reset_metrics() -> None:
     metrics.reset()
+
+
+@pytest.fixture
+def collected_events() -> Iterator[list[Event]]:
+    events: list[Event] = []
+    subscribe(events.append)
+    yield events
+    unsubscribe(events.append)
 
 
 class _FailingOCR(ExtractionPipeline):
@@ -92,24 +101,53 @@ async def _run_success(
 
 
 @pytest.mark.asyncio
-async def test_each_stage_logs_completion_with_job_and_document_ids(
+async def test_job_started_event_is_emitted_with_job_and_document_ids(
     session_factory: async_sessionmaker[AsyncSession],
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     storage = LocalFileStorage(tmp_path / "uploads")
     job = await _make_document_and_job(session_factory, storage)
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        await _run_success(session_factory, storage, job)
+    await _run_success(session_factory, storage, job)
 
-    stage_logs = [r.message for r in caplog.records if "stage complete" in r.message]
-    stages_logged = {msg.split("stage=")[1].split()[0] for msg in stage_logs}
-    assert stages_logged == {"ocr", "field_extraction", "validation", "pipeline_total"}
-    for message in stage_logs:
-        assert f"job_id={job.id}" in message
-        assert f"document_id={job.document_id}" in message
-        assert "duration_seconds=" in message
+    started = [e for e in collected_events if e.event_type == EventType.JOB_STARTED]
+    assert len(started) == 1
+    assert started[0].job_id == job.id
+    assert started[0].document_id == job.document_id
+
+
+@pytest.mark.asyncio
+async def test_each_stage_emits_started_and_completed_events(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    collected_events: list[Event],
+) -> None:
+    storage = LocalFileStorage(tmp_path / "uploads")
+    job = await _make_document_and_job(session_factory, storage)
+
+    await _run_success(session_factory, storage, job)
+
+    started_stages = {
+        e.metadata["stage"]
+        for e in collected_events
+        if e.event_type == EventType.PIPELINE_STAGE_STARTED
+    }
+    completed_stages = {
+        e.metadata["stage"]
+        for e in collected_events
+        if e.event_type == EventType.PIPELINE_STAGE_COMPLETED
+    }
+    expected = {"pipeline_total", "ocr", "field_extraction", "validation"}
+    assert started_stages == expected
+    assert completed_stages == expected
+
+    for event in collected_events:
+        if event.event_type == EventType.PIPELINE_STAGE_COMPLETED:
+            assert event.job_id == job.id
+            assert event.document_id == job.document_id
+            assert isinstance(event.metadata["duration_ms"], (int, float))
+            assert event.metadata["duration_ms"] >= 0.0
 
 
 @pytest.mark.asyncio
@@ -129,53 +167,62 @@ async def test_stage_timings_are_recorded_in_metrics(
 
 
 @pytest.mark.asyncio
-async def test_confidence_summary_is_logged_for_a_completed_job(
+async def test_confidence_snapshot_is_carried_on_the_pipeline_total_event(
     session_factory: async_sessionmaker[AsyncSession],
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     storage = LocalFileStorage(tmp_path / "uploads")
     job = await _make_document_and_job(session_factory, storage)
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        await _run_success(session_factory, storage, job)
+    await _run_success(session_factory, storage, job)
 
-    confidence_logs = [r.message for r in caplog.records if "confidence summary" in r.message]
-    assert len(confidence_logs) == 1
-    message = confidence_logs[0]
-    assert f"job_id={job.id}" in message
-    assert f"document_id={job.document_id}" in message
-    assert "document_confidence=" in message
-    assert "low_confidence_field_count=" in message
-    assert "field_confidence=[" in message
+    pipeline_total_events = [
+        e
+        for e in collected_events
+        if e.event_type == EventType.PIPELINE_STAGE_COMPLETED
+        and e.metadata.get("stage") == "pipeline_total"
+    ]
+    assert len(pipeline_total_events) == 1
+    metadata = pipeline_total_events[0].metadata
+    assert "document_confidence" in metadata
+    assert "low_confidence_field_count" in metadata
+    assert "min_field_confidence" in metadata
+    assert "avg_field_confidence" in metadata
+    assert "max_field_confidence" in metadata
 
 
 @pytest.mark.asyncio
-async def test_ocr_stage_logs_and_records_duration_even_on_failure(
+async def test_ocr_stage_emits_completed_event_with_error_type_even_on_failure(
     session_factory: async_sessionmaker[AsyncSession],
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     storage = LocalFileStorage(tmp_path / "uploads")
     job = await _make_document_and_job(session_factory, storage)
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        async with session_factory() as db:
-            with pytest.raises(TerminalProcessingError):
-                await run_processing_pipeline(
-                    job,
-                    db=db,
-                    storage=storage,
-                    extraction_pipeline=_FailingOCR(),
-                    field_extraction_pipeline=MockFieldExtractionPipeline(),
-                    phi_validator=PHIDetectionValidator(),
-                    validation_pipeline=CompositeValidationPipeline(
-                        [RequiredFieldsValidator(), PHIDetectionValidator()]
-                    ),
-                )
+    async with session_factory() as db:
+        with pytest.raises(TerminalProcessingError):
+            await run_processing_pipeline(
+                job,
+                db=db,
+                storage=storage,
+                extraction_pipeline=_FailingOCR(),
+                field_extraction_pipeline=MockFieldExtractionPipeline(),
+                phi_validator=PHIDetectionValidator(),
+                validation_pipeline=CompositeValidationPipeline(
+                    [RequiredFieldsValidator(), PHIDetectionValidator()]
+                ),
+            )
 
-    stage_logs = [r.message for r in caplog.records if "stage=ocr" in r.message]
-    assert len(stage_logs) == 1
+    ocr_completed = [
+        e
+        for e in collected_events
+        if e.event_type == EventType.PIPELINE_STAGE_COMPLETED and e.metadata.get("stage") == "ocr"
+    ]
+    assert len(ocr_completed) == 1
+    assert ocr_completed[0].metadata["error_type"] == "ExtractionError"
+
     assert metrics.stage_summary("ocr") is not None
     # A failed stage never reaches field_extraction/validation/pipeline_total.
     assert metrics.stage_summary("field_extraction") is None
@@ -183,10 +230,10 @@ async def test_ocr_stage_logs_and_records_duration_even_on_failure(
 
 
 @pytest.mark.asyncio
-async def test_phi_detected_still_logs_confidence_summary_and_pipeline_total(
+async def test_phi_detected_still_emits_confidence_snapshot_and_pipeline_total(
     session_factory: async_sessionmaker[AsyncSession],
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     storage = LocalFileStorage(tmp_path / "uploads")
     storage_key = f"{uuid.uuid4()}/note.txt"
@@ -208,21 +255,26 @@ async def test_phi_detected_still_logs_confidence_summary_and_pipeline_total(
         await session.commit()
         await session.refresh(job)
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        async with session_factory() as db:
-            await run_processing_pipeline(
-                job,
-                db=db,
-                storage=storage,
-                extraction_pipeline=_FakeOCR("patient ssn 123-45-6789 needs follow-up"),
-                field_extraction_pipeline=MockFieldExtractionPipeline(),
-                phi_validator=PHIDetectionValidator(),
-                validation_pipeline=CompositeValidationPipeline(
-                    [RequiredFieldsValidator(), PHIDetectionValidator()]
-                ),
-            )
+    async with session_factory() as db:
+        await run_processing_pipeline(
+            job,
+            db=db,
+            storage=storage,
+            extraction_pipeline=_FakeOCR("patient ssn 123-45-6789 needs follow-up"),
+            field_extraction_pipeline=MockFieldExtractionPipeline(),
+            phi_validator=PHIDetectionValidator(),
+            validation_pipeline=CompositeValidationPipeline(
+                [RequiredFieldsValidator(), PHIDetectionValidator()]
+            ),
+        )
 
-    assert any("confidence summary" in r.message for r in caplog.records)
-    assert any("stage=pipeline_total" in r.message for r in caplog.records)
+    pipeline_total_events = [
+        e
+        for e in collected_events
+        if e.event_type == EventType.PIPELINE_STAGE_COMPLETED
+        and e.metadata.get("stage") == "pipeline_total"
+    ]
+    assert len(pipeline_total_events) == 1
+    assert "document_confidence" in pipeline_total_events[0].metadata
     # PHI-detected halts before field extraction — that stage never ran.
     assert metrics.stage_summary("field_extraction") is None

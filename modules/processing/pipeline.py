@@ -51,13 +51,18 @@ from modules.ingestion.storage import StorageBackend
 from modules.ocr.base import ExtractionError, ExtractionOutput, ExtractionPipeline
 from modules.ocr.models import ExtractionResult
 from modules.processing.errors import TerminalProcessingError, TransientProcessingError
-from modules.processing.metrics import metrics
+from modules.processing.events import Event, EventType, emit_event
 from modules.processing.models import Job
+from modules.processing.observability.registry import register_default_subscribers
 from modules.validation.base import ValidationPipeline
 from modules.validation.models import ValidationResult
 from shared.config.settings import get_settings
-from shared.logging.logger import logger
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Startup-context wiring: registers the metrics/logging subscribers
+# exactly once (idempotent — worker.py makes the same call
+# independently). Not inside emit_event, not inside modules.processing.events.
+register_default_subscribers()
 
 
 def _utcnow() -> datetime:
@@ -201,48 +206,65 @@ def _build_metadata(
     return metadata
 
 
-def _log_stage(job: Job, document_id: uuid.UUID, stage: str, duration_seconds: float) -> None:
-    """Increment 7 observability: records + logs one pipeline stage's timing.
-
-    Purely additive — called after a stage already succeeded or failed;
-    never influences what happens next.
-    """
-    metrics.record_stage_duration(stage, duration_seconds)
-    logger.info(
-        "pipeline: stage complete job_id=%s document_id=%s stage=%s duration_seconds=%.3f",
-        job.id,
-        document_id,
-        stage,
-        duration_seconds,
+def _emit_stage_started(job: Job, document_id: uuid.UUID, stage: str) -> None:
+    """Increment 8: PIPELINE_STAGE_STARTED — purely observational, emitted
+    right before a stage's work begins."""
+    emit_event(
+        Event(
+            event_type=EventType.PIPELINE_STAGE_STARTED,
+            job_id=job.id,
+            document_id=document_id,
+            metadata={"stage": stage},
+        )
     )
 
 
-def _log_confidence_summary(job: Job, document_id: uuid.UUID, result: "ProcessingResult") -> None:
-    """Increment 7 / ADR-0025 observability: logs the confidence signals
-    already computed for this result. Read-only — runs after `result` is
-    fully built and never affects it or any state transition.
+def _emit_stage_completed(
+    job: Job,
+    document_id: uuid.UUID,
+    stage: str,
+    duration_seconds: float,
+    *,
+    error_type: str | None = None,
+    extra_metadata: dict[str, object] | None = None,
+) -> None:
+    """Increment 8: PIPELINE_STAGE_COMPLETED, replacing Increment 7's
+    _log_stage (which called metrics/logger directly). Emitted after a
+    stage already succeeded or failed — purely observational, never
+    influences what happens next.
+    """
+    metadata: dict[str, object] = {"stage": stage, "duration_ms": duration_seconds * 1000}
+    if error_type is not None:
+        metadata["error_type"] = error_type
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    emit_event(
+        Event(
+            event_type=EventType.PIPELINE_STAGE_COMPLETED,
+            job_id=job.id,
+            document_id=document_id,
+            metadata=metadata,
+        )
+    )
+
+
+def _confidence_snapshot(result: "ProcessingResult") -> dict[str, object]:
+    """ADR-0025 confidence signals, packaged as event metadata for the
+    `pipeline_total` stage-completed event (Increment 8) — the same data
+    Increment 7's _log_confidence_summary logged directly, now carried on
+    an event instead.
     """
     field_scores = list(result.field_confidence.values())
-    if field_scores:
-        distribution = (
-            f"min={min(field_scores):.3f} "
-            f"avg={sum(field_scores) / len(field_scores):.3f} "
-            f"max={max(field_scores):.3f}"
-        )
-    else:
-        distribution = "n/a"
     threshold = get_settings().low_confidence_threshold
-    low_confidence_field_count = sum(1 for score in field_scores if score < threshold)
-
-    logger.info(
-        "pipeline: confidence summary job_id=%s document_id=%s document_confidence=%.3f "
-        "low_confidence_field_count=%d field_confidence=[%s]",
-        job.id,
-        document_id,
-        result.confidence,
-        low_confidence_field_count,
-        distribution,
-    )
+    snapshot: dict[str, object] = {
+        "document_confidence": result.confidence,
+        "low_confidence_field_count": sum(1 for score in field_scores if score < threshold),
+    }
+    if field_scores:
+        snapshot["min_field_confidence"] = min(field_scores)
+        snapshot["avg_field_confidence"] = sum(field_scores) / len(field_scores)
+        snapshot["max_field_confidence"] = max(field_scores)
+    return snapshot
 
 
 async def _persist_failure(
@@ -308,24 +330,34 @@ async def run_processing_pipeline(
         # to, so this is unconditionally terminal.
         raise TerminalProcessingError(f"document {job.document_id} not found")
 
-    logger.info(
-        "pipeline: job claimed for processing job_id=%s document_id=%s status=%s",
-        job.id,
-        document.id,
-        job.status.value,
+    emit_event(
+        Event(
+            event_type=EventType.JOB_STARTED,
+            job_id=job.id,
+            document_id=document.id,
+            metadata={"status": job.status.value},
+        )
     )
+    _emit_stage_started(job, document.id, "pipeline_total")
 
     await ingestion_service.update_status(db, document, DocumentStatus.PROCESSING)
 
     data = await run_in_threadpool(storage.read, document.storage_key)
 
+    _emit_stage_started(job, document.id, "ocr")
     ocr_started_at = time.monotonic()
     try:
         extraction_output = await run_in_threadpool(
             extraction_pipeline.extract, data=data, content_type=document.content_type
         )
     except (ExtractionError, ValueError) as exc:
-        _log_stage(job, document.id, "ocr", time.monotonic() - ocr_started_at)
+        _emit_stage_completed(
+            job,
+            document.id,
+            "ocr",
+            time.monotonic() - ocr_started_at,
+            error_type=type(exc).__name__,
+        )
         # ValueError alongside ExtractionError: TesseractExtractionPipeline
         # raises a bare ValueError (not ExtractionError) for a content type
         # it doesn't recognize — previously uncaught here, which meant the
@@ -342,7 +374,7 @@ async def run_processing_pipeline(
         )
         raise TerminalProcessingError(str(exc)) from exc
     else:
-        _log_stage(job, document.id, "ocr", time.monotonic() - ocr_started_at)
+        _emit_stage_completed(job, document.id, "ocr", time.monotonic() - ocr_started_at)
 
     # PHI-check the raw OCR text before the field-extraction LLM ever sees
     # it (ADR-0011, ADR-0019) — bare PHIDetectionValidator, since fields
@@ -377,18 +409,28 @@ async def run_processing_pipeline(
                 extra={"outcome": "phi_detected"},
             ),
         )
-        _log_confidence_summary(job, document.id, result)
-        _log_stage(job, document.id, "pipeline_total", time.monotonic() - pipeline_started_at)
+        _emit_stage_completed(
+            job,
+            document.id,
+            "pipeline_total",
+            time.monotonic() - pipeline_started_at,
+            extra_metadata=_confidence_snapshot(result),
+        )
         return result
 
+    _emit_stage_started(job, document.id, "field_extraction")
     field_extraction_started_at = time.monotonic()
     try:
         field_output = await run_in_threadpool(
             field_extraction_pipeline.extract_fields, raw_text=extraction_output.raw_text
         )
     except FieldExtractionError as exc:
-        _log_stage(
-            job, document.id, "field_extraction", time.monotonic() - field_extraction_started_at
+        _emit_stage_completed(
+            job,
+            document.id,
+            "field_extraction",
+            time.monotonic() - field_extraction_started_at,
+            error_type=type(exc).__name__,
         )
         if _is_transient_field_extraction_error(exc):
             # Document stays `processing` (ADR-0020) and nothing is
@@ -405,7 +447,7 @@ async def run_processing_pipeline(
         )
         raise TerminalProcessingError(str(exc)) from exc
     else:
-        _log_stage(
+        _emit_stage_completed(
             job, document.id, "field_extraction", time.monotonic() - field_extraction_started_at
         )
 
@@ -414,9 +456,10 @@ async def run_processing_pipeline(
         fields=field_output.fields,
         confidence=_aggregate_confidence(extraction_output.confidence, field_output.confidence),
     )
+    _emit_stage_started(job, document.id, "validation")
     validation_started_at = time.monotonic()
     validation_output = validation_pipeline.validate(combined_output)
-    _log_stage(job, document.id, "validation", time.monotonic() - validation_started_at)
+    _emit_stage_completed(job, document.id, "validation", time.monotonic() - validation_started_at)
     field_confidence = _compute_field_confidence(combined_output.fields, combined_output.confidence)
 
     extraction = ExtractionResult(
@@ -462,6 +505,11 @@ async def run_processing_pipeline(
             },
         ),
     )
-    _log_confidence_summary(job, document.id, result)
-    _log_stage(job, document.id, "pipeline_total", time.monotonic() - pipeline_started_at)
+    _emit_stage_completed(
+        job,
+        document.id,
+        "pipeline_total",
+        time.monotonic() - pipeline_started_at,
+        extra_metadata=_confidence_snapshot(result),
+    )
     return result

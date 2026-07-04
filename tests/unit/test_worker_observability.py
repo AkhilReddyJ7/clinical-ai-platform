@@ -1,13 +1,13 @@
 import asyncio
-import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import modules.processing.worker as worker_module
 from modules.processing.errors import TerminalProcessingError, TransientProcessingError
+from modules.processing.events import Event, EventType, subscribe, unsubscribe
 from modules.processing.metrics import metrics
 from modules.processing.models import Job, JobStatus
 from modules.processing.worker import start_worker, stop_worker
@@ -18,6 +18,14 @@ POLL_INTERVAL = 0.01
 @pytest.fixture(autouse=True)
 def _reset_metrics() -> None:
     metrics.reset()
+
+
+@pytest.fixture
+def collected_events() -> Iterator[list[Event]]:
+    events: list[Event] = []
+    subscribe(events.append)
+    yield events
+    unsubscribe(events.append)
 
 
 def _fake_job() -> Job:
@@ -40,10 +48,10 @@ def _fake_claim_once(
 
 
 @pytest.mark.asyncio
-async def test_job_claim_is_logged_and_counted(
+async def test_job_claim_emits_event_and_is_counted(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     job = _fake_job()
     drained = asyncio.Event()
@@ -52,26 +60,25 @@ async def test_job_claim_is_logged_and_counted(
     async def process_job_fn(claimed: Job) -> None:
         return None
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        task = await start_worker(
-            session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
-        )
-        await asyncio.wait_for(drained.wait(), timeout=2)
-        await stop_worker(task)
+    task = await start_worker(
+        session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
+    )
+    await asyncio.wait_for(drained.wait(), timeout=2)
+    await stop_worker(task)
 
-    claim_logs = [r.message for r in caplog.records if "job claimed" in r.message]
-    assert len(claim_logs) == 1
-    assert f"job_id={job.id}" in claim_logs[0]
-    assert f"document_id={job.document_id}" in claim_logs[0]
-    assert "status=running" in claim_logs[0]
+    claimed_events = [e for e in collected_events if e.event_type == EventType.JOB_CLAIMED]
+    assert len(claimed_events) == 1
+    assert claimed_events[0].job_id == job.id
+    assert claimed_events[0].document_id == job.document_id
+    assert claimed_events[0].metadata["status"] == "running"
     assert metrics.jobs_claimed == 1
 
 
 @pytest.mark.asyncio
-async def test_successful_completion_is_logged_and_counted(
+async def test_successful_completion_emits_event_and_is_counted(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     job = _fake_job()
     drained = asyncio.Event()
@@ -80,25 +87,24 @@ async def test_successful_completion_is_logged_and_counted(
     async def process_job_fn(claimed: Job) -> None:
         return None
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        task = await start_worker(
-            session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
-        )
-        await asyncio.wait_for(drained.wait(), timeout=2)
-        await stop_worker(task)
+    task = await start_worker(
+        session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
+    )
+    await asyncio.wait_for(drained.wait(), timeout=2)
+    await stop_worker(task)
 
-    completed_logs = [r.message for r in caplog.records if "job completed" in r.message]
-    assert len(completed_logs) == 1
-    assert "duration_seconds=" in completed_logs[0]
+    completed_events = [e for e in collected_events if e.event_type == EventType.JOB_COMPLETED]
+    assert len(completed_events) == 1
+    assert isinstance(completed_events[0].metadata["duration_ms"], (int, float))
     assert metrics.completions == 1
     assert metrics.stage_summary("job_total") is not None
 
 
 @pytest.mark.asyncio
-async def test_transient_failure_is_logged_as_retrying_and_counted(
+async def test_transient_failure_emits_retrying_event_and_is_counted(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     job = _fake_job()
     drained = asyncio.Event()
@@ -107,25 +113,26 @@ async def test_transient_failure_is_logged_as_retrying_and_counted(
     async def process_job_fn(claimed: Job) -> None:
         raise TransientProcessingError("rate limited")
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        task = await start_worker(
-            session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
-        )
-        await asyncio.wait_for(drained.wait(), timeout=2)
-        await stop_worker(task)
+    task = await start_worker(
+        session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
+    )
+    await asyncio.wait_for(drained.wait(), timeout=2)
+    await stop_worker(task)
 
-    retry_logs = [r.message for r in caplog.records if "job retrying" in r.message]
-    assert len(retry_logs) == 1
-    assert f"job_id={job.id}" in retry_logs[0]
+    retrying_events = [e for e in collected_events if e.event_type == EventType.JOB_RETRYING]
+    assert len(retrying_events) == 1
+    assert retrying_events[0].job_id == job.id
+    assert retrying_events[0].metadata["error_type"] == "TransientProcessingError"
+    assert retrying_events[0].metadata["error"] == "rate limited"
     assert metrics.retries == 1
     assert metrics.terminal_failures == 0
 
 
 @pytest.mark.asyncio
-async def test_terminal_failure_is_logged_as_failed_and_counted(
+async def test_terminal_failure_emits_failed_event_and_is_counted(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    collected_events: list[Event],
 ) -> None:
     job = _fake_job()
     drained = asyncio.Event()
@@ -134,16 +141,15 @@ async def test_terminal_failure_is_logged_as_failed_and_counted(
     async def process_job_fn(claimed: Job) -> None:
         raise TerminalProcessingError("invalid api key")
 
-    with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
-        task = await start_worker(
-            session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
-        )
-        await asyncio.wait_for(drained.wait(), timeout=2)
-        await stop_worker(task)
+    task = await start_worker(
+        session_factory, process_job_fn=process_job_fn, poll_interval_seconds=POLL_INTERVAL
+    )
+    await asyncio.wait_for(drained.wait(), timeout=2)
+    await stop_worker(task)
 
-    failed_logs = [r.message for r in caplog.records if "job failed" in r.message]
-    assert len(failed_logs) == 1
-    assert "error=invalid api key" in failed_logs[0]
+    failed_events = [e for e in collected_events if e.event_type == EventType.JOB_FAILED]
+    assert len(failed_events) == 1
+    assert failed_events[0].metadata["error"] == "invalid api key"
     assert metrics.terminal_failures == 1
     assert metrics.retries == 0
 

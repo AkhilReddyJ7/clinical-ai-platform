@@ -1,0 +1,103 @@
+"""In-process event dispatch core (Increment 8; made pure in Increment 8's
+structural refactor).
+
+Pure dispatch only: EventType, Event, subscribe/unsubscribe/
+clear_subscribers, emit_event. This module has no knowledge of what a
+subscriber does — no metrics, no application logging, no import of
+anything under modules.processing.observability. Wiring the default
+observability subscribers happens exactly once, in
+modules.processing.observability.registry.register_default_subscribers,
+never here and never inside emit_event itself — see that module for the
+metrics/logging consumers execution code actually gets.
+
+Not external infrastructure: no Kafka, no Redis, no OpenTelemetry. A
+plain in-process list of synchronous callables, dispatched synchronously
+in registration order.
+"""
+
+import enum
+import logging
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+
+class EventType(str, enum.Enum):
+    JOB_CLAIMED = "job_claimed"
+    JOB_STARTED = "job_started"
+    PIPELINE_STAGE_STARTED = "pipeline_stage_started"
+    PIPELINE_STAGE_COMPLETED = "pipeline_stage_completed"
+    JOB_COMPLETED = "job_completed"
+    JOB_RETRYING = "job_retrying"
+    JOB_FAILED = "job_failed"
+    # Reserved for ADR-0024's stale-job detection/reclaim loop, which
+    # remains unimplemented (deferred since Increment 4; carried forward
+    # as an inert counter in WorkerMetrics.stale_reclaims). Nothing emits
+    # this yet — it exists so that future detection logic has an event to
+    # emit into rather than inventing one alongside it.
+    JOB_STALE_SKIPPED = "job_stale_skipped"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass
+class Event:
+    event_type: EventType
+    job_id: uuid.UUID
+    document_id: uuid.UUID | None
+    metadata: dict[str, object] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=_utcnow)
+
+
+_subscribers: list[Callable[[Event], None]] = []
+
+# A plain stdlib logger, deliberately not shared.logging.logger: this
+# module must stay free of any observability-layer dependency (that's
+# the whole point of the refactor), and emit_event's own diagnostic
+# logging for a misbehaving subscriber is the one exception that needs
+# *some* logging capability regardless.
+_log = logging.getLogger(__name__)
+
+
+def subscribe(handler: Callable[[Event], None]) -> None:
+    _subscribers.append(handler)
+
+
+def unsubscribe(handler: Callable[[Event], None]) -> None:
+    if handler in _subscribers:
+        _subscribers.remove(handler)
+
+
+def clear_subscribers() -> None:
+    """Removes every subscriber, defaults included.
+
+    A pure core operation — this module has no notion of which
+    subscribers are "default"; restoring them is the observability
+    registry's job (modules.processing.observability.registry).
+    """
+    _subscribers.clear()
+
+
+def emit_event(event: Event) -> None:
+    """Dispatch `event` to every subscribed handler, synchronously, in
+    registration order.
+
+    A handler that raises is caught and logged, never propagated to the
+    caller — observability must never be able to break execution.
+    Iterates over a snapshot of the subscriber list so a handler that
+    subscribes/unsubscribes during dispatch can't corrupt this call's
+    iteration.
+    """
+    for handler in list(_subscribers):
+        try:
+            handler(event)
+        except Exception:
+            _log.exception(
+                "subscriber %r raised while handling event_type=%s job_id=%s",
+                handler,
+                event.event_type.value,
+                event.job_id,
+            )
