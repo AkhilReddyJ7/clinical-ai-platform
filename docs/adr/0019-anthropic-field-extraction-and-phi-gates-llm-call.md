@@ -174,6 +174,16 @@ not a crash to work around).
   verified live; the only remaining gap is confirming a real model
   response parses as expected, which needs a real key placed in a
   gitignored `.env` (never committed).
+
+  **Status as of 2026-07-04:** explicitly attempted and explicitly
+  deferred, not just not-yet-gotten-to. The project owner does not
+  currently have Anthropic API credits available. No live call was made
+  (none should be attempted without credits — this isn't a "try it and
+  see" situation, it's a real cost). This is now Sprint 2's one named,
+  outstanding item rather than an implicit gap: closing it needs nothing
+  further from this codebase, only credits + a real key placed in a
+  gitignored `.env`, followed by one `docker compose up` + upload +
+  `/process` round trip to confirm real model output parses as expected.
 - `modules/ocr/`'s own `synthesize_fields` (bytes-keyed) is now fully
   vestigial for the real pipeline — `TesseractExtractionPipeline` still
   computes it (unchanged, per the split-not-touch-OCR design above), but
