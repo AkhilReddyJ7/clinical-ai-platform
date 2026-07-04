@@ -11,6 +11,7 @@ from alembic import context
 # on Base.metadata before autogenerate/upgrade inspects it.
 from modules.ingestion import models as ingestion_models  # noqa: F401
 from modules.ocr import models as ocr_models  # noqa: F401
+from modules.processing import models as processing_models  # noqa: F401
 from modules.validation import models as validation_models  # noqa: F401
 from shared.config.settings import get_settings
 from shared.database.base import Base

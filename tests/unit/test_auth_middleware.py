@@ -47,7 +47,7 @@ async def test_rejects_missing_key_without_ever_reading_the_body(
     # rejection. This test proves the fix at the ASGI level directly:
     # receive() (which is what would pull body bytes off the wire) must
     # never be called when auth fails.
-    monkeypatch.setattr(get_settings(), "api_keys", "valid-key")
+    monkeypatch.setattr(get_settings(), "api_keys", "alice:valid-key")
     middleware: Callable[[Scope, Receive, Send], Awaitable[None]] = ApiKeyGateMiddleware(
         _noop_app, protected_prefix="/documents"
     )
@@ -64,7 +64,7 @@ async def test_rejects_missing_key_without_ever_reading_the_body(
 async def test_rejects_wrong_key_without_ever_reading_the_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(get_settings(), "api_keys", "valid-key")
+    monkeypatch.setattr(get_settings(), "api_keys", "alice:valid-key")
     middleware: Callable[[Scope, Receive, Send], Awaitable[None]] = ApiKeyGateMiddleware(
         _noop_app, protected_prefix="/documents"
     )
@@ -95,8 +95,28 @@ async def test_fails_closed_without_reading_body_when_no_keys_configured(
 
 
 @pytest.mark.asyncio
-async def test_allows_correct_key_through_to_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fails_closed_when_configured_keys_have_no_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR-0026: a bare key with no `label:` prefix is a configuration
+    # error and is dropped during parsing, not silently accepted -- with
+    # nothing left, this behaves exactly like an empty API_KEYS.
     monkeypatch.setattr(get_settings(), "api_keys", "valid-key")
+    middleware: Callable[[Scope, Receive, Send], Awaitable[None]] = ApiKeyGateMiddleware(
+        _noop_app, protected_prefix="/documents"
+    )
+    receive, receive_calls = _tracking_receive()
+    send, sent = _collecting_send()
+
+    await middleware(_scope("/documents", headers=[(b"x-api-key", b"valid-key")]), receive, send)
+
+    assert receive_calls == []
+    assert sent[0]["status"] == 503
+
+
+@pytest.mark.asyncio
+async def test_allows_correct_key_through_to_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "api_keys", "alice:valid-key")
     middleware: Callable[[Scope, Receive, Send], Awaitable[None]] = ApiKeyGateMiddleware(
         _noop_app, protected_prefix="/documents"
     )
@@ -109,10 +129,28 @@ async def test_allows_correct_key_through_to_the_app(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_stashes_the_resolved_caller_label_on_scope_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "api_keys", "alice:valid-key,bob:other-key")
+    middleware: Callable[[Scope, Receive, Send], Awaitable[None]] = ApiKeyGateMiddleware(
+        _noop_app, protected_prefix="/documents"
+    )
+    receive, _receive_calls = _tracking_receive()
+    send, sent = _collecting_send()
+    scope = _scope("/documents", headers=[(b"x-api-key", b"other-key")])
+
+    await middleware(scope, receive, send)
+
+    assert sent[0]["status"] == 200
+    assert scope["state"]["caller"] == "bob"
+
+
+@pytest.mark.asyncio
 async def test_does_not_gate_paths_outside_the_protected_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(get_settings(), "api_keys", "valid-key")
+    monkeypatch.setattr(get_settings(), "api_keys", "alice:valid-key")
     middleware: Callable[[Scope, Receive, Send], Awaitable[None]] = ApiKeyGateMiddleware(
         _noop_app, protected_prefix="/documents"
     )

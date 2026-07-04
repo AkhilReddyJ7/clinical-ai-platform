@@ -13,9 +13,13 @@ class RequiredFieldsValidator(ValidationPipeline):
     """
 
     def validate(self, extraction: ExtractionOutput) -> ValidationOutput:
+        # .strip() before the truthiness check: a whitespace-only value
+        # (e.g. a field extractor emitting " " instead of omitting the key)
+        # is not meaningfully present and was previously treated as if it
+        # were — a false negative for "missing" that this closes.
         issues = [
             f"missing required field: {field_name}"
             for field_name in REQUIRED_FIELDS
-            if not extraction.fields.get(field_name)
+            if not extraction.fields.get(field_name, "").strip()
         ]
         return ValidationOutput(is_valid=not issues, issues=issues)

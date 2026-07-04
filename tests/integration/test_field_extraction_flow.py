@@ -1,3 +1,7 @@
+import uuid
+from collections.abc import Awaitable, Callable
+
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_extraction_pipeline, get_field_extraction_pipeline
@@ -36,7 +40,10 @@ class _FailingFieldExtractionPipeline(FieldExtractionPipeline):
         raise FieldExtractionError("simulated provider outage")
 
 
-def test_phi_detected_skips_field_extraction_call_entirely(client: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_phi_detected_skips_field_extraction_call_entirely(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]]
+) -> None:
     app.dependency_overrides[get_extraction_pipeline] = lambda: TesseractExtractionPipeline()
     app.dependency_overrides[get_field_extraction_pipeline] = (
         lambda: _NeverCallMeFieldExtractionPipeline()
@@ -49,8 +56,12 @@ def test_phi_detected_skips_field_extraction_call_entirely(client: TestClient) -
     )
     document_id = upload.json()["id"]
 
-    response = client.post(f"/documents/{document_id}/process")
+    process_response = client.post(f"/documents/{document_id}/process")
+    assert process_response.status_code == 202
 
+    await process_job(uuid.UUID(document_id))
+
+    response = client.get(f"/documents/{document_id}/result")
     assert response.status_code == 200
     body = response.json()
     assert body["document"]["status"] == "failed"
@@ -58,7 +69,10 @@ def test_phi_detected_skips_field_extraction_call_entirely(client: TestClient) -
     assert any("phi" in issue for issue in body["validation"]["issues"])
 
 
-def test_incomplete_llm_fields_fail_required_fields_validation(client: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_incomplete_llm_fields_fail_required_fields_validation(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]]
+) -> None:
     app.dependency_overrides[get_field_extraction_pipeline] = (
         lambda: _PartialFieldExtractionPipeline()
     )
@@ -69,8 +83,12 @@ def test_incomplete_llm_fields_fail_required_fields_validation(client: TestClien
     )
     document_id = upload.json()["id"]
 
-    response = client.post(f"/documents/{document_id}/process")
+    process_response = client.post(f"/documents/{document_id}/process")
+    assert process_response.status_code == 202
 
+    await process_job(uuid.UUID(document_id))
+
+    response = client.get(f"/documents/{document_id}/result")
     assert response.status_code == 200
     body = response.json()
     assert body["document"]["status"] == "failed"
@@ -82,7 +100,10 @@ def test_incomplete_llm_fields_fail_required_fields_validation(client: TestClien
     )
 
 
-def test_field_extraction_error_fails_cleanly_instead_of_crashing(client: TestClient) -> None:
+@pytest.mark.asyncio
+async def test_field_extraction_error_fails_cleanly_instead_of_crashing(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]]
+) -> None:
     app.dependency_overrides[get_extraction_pipeline] = lambda: TesseractExtractionPipeline()
     app.dependency_overrides[get_field_extraction_pipeline] = (
         lambda: _FailingFieldExtractionPipeline()
@@ -94,8 +115,12 @@ def test_field_extraction_error_fails_cleanly_instead_of_crashing(client: TestCl
     )
     document_id = upload.json()["id"]
 
-    response = client.post(f"/documents/{document_id}/process")
+    process_response = client.post(f"/documents/{document_id}/process")
+    assert process_response.status_code == 202
 
+    await process_job(uuid.UUID(document_id))
+
+    response = client.get(f"/documents/{document_id}/result")
     assert response.status_code == 200
     body = response.json()
     assert body["document"]["status"] == "failed"

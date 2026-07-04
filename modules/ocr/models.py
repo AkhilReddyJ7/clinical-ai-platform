@@ -16,6 +16,11 @@ class ExtractionResult(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    # Which job attempt produced this result. Nullable: existing rows (and
+    # any future direct/synchronous write) predate a job existing at all.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("jobs.id"), nullable=True, index=True
+    )
     raw_text: Mapped[str] = mapped_column(Text)
     fields: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)

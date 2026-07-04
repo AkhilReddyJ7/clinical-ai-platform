@@ -65,17 +65,35 @@ jobs:
           # outcome here is a clean "failed" status via the same graceful
           # failure path as any other extraction failure (docs/adr/0012) —
           # this still proves the full container/dependency wiring (OCR,
-          # PHI gate, field-extraction stage) works end-to-end, without
-          # needing real credentials or incurring per-run API cost.
+          # PHI gate, field-extraction stage, and now the worker service)
+          # works end-to-end, without needing real credentials or
+          # incurring per-run API cost.
+          #
+          # ADR-0022: POST /process only enqueues now (202, no result
+          # body) -- the `worker` service (docker-compose.yml) claims and
+          # runs the job asynchronously, so this polls GET /result until
+          # the document reaches a terminal status instead of reading the
+          # process response directly.
           echo "synthetic ci smoke test note" > /tmp/ci-smoke.txt
           doc=$(curl -sf -H "X-API-Key: local-dev-key" \
             -F "file=@/tmp/ci-smoke.txt;type=text/plain" \
             http://localhost:8000/documents)
           echo "upload response: $doc"
           doc_id=$(echo "$doc" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-          result=$(curl -sf -H "X-API-Key: local-dev-key" -X POST \
+
+          process_response=$(curl -sf -H "X-API-Key: local-dev-key" -X POST \
             "http://localhost:8000/documents/$doc_id/process")
-          echo "process response: $result"
+          echo "process response: $process_response"
+          echo "$process_response" | grep -q '"job_status":"queued"'
+
+          result=""
+          for _ in $(seq 1 30); do
+            result=$(curl -sf -H "X-API-Key: local-dev-key" "http://localhost:8000/documents/$doc_id/result")
+            status=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['document']['status'])")
+            [ "$status" = "failed" ] && break
+            sleep 1
+          done
+          echo "final result response: $result"
           echo "$result" | grep -q '"status":"failed"'
           echo "$result" | grep -q 'Anthropic API key is not configured'
 
