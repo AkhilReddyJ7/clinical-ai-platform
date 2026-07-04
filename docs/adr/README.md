@@ -1,8 +1,11 @@
 # Architecture Decision Records
 
 Decisions made during Sprint 1 (MVP slice), Sprint 1.5 (production-readiness
-hardening), and Sprint 2 (auth, PHI detection, real OCR, LLM-based field
-extraction). Each record follows: Status, Context, Decision, Consequences.
+hardening), Sprint 2 (auth, PHI detection, real OCR, LLM-based field
+extraction), and Sprint 3 (production processing pipeline: state machine,
+async worker, retry handling, identity, audit — see
+`../architecture/sprint-3-design-baseline.md` for the approved design
+baseline). Each record follows: Status, Context, Decision, Consequences.
 
 | # | Title | Status |
 |---|---|---|
@@ -25,3 +28,7 @@ extraction). Each record follows: Status, Context, Decision, Consequences.
 | [0017](0017-reject-unauthenticated-requests-before-body-read.md) | Reject unauthenticated requests before the body is ever read | Accepted |
 | [0018](0018-evaluated-presidio-not-adopting-yet.md) | Evaluated Microsoft Presidio for PHI detection; not adopting yet | Accepted |
 | [0019](0019-anthropic-field-extraction-and-phi-gates-llm-call.md) | Anthropic-based field extraction; PHI check now gates the LLM call | Accepted |
+| [0020](0020-document-and-job-state-machines.md) | Document and job state machines: legal transitions | Accepted |
+| [0021](0021-postgres-backed-job-queue.md) | Postgres-backed job queue, not Redis/Celery | Accepted |
+| [0022](0022-process-api-contract-enqueue-and-return.md) | `/process` becomes enqueue-and-return; `/result` becomes the canonical status/result endpoint | Accepted |
+| [0023](0023-retry-and-backoff-policy-for-processing-jobs.md) | Retry and backoff policy for processing jobs | Accepted |
