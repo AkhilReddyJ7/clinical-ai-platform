@@ -35,3 +35,4 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0024](0024-stale-job-recovery-worker-crash.md) | Stale RUNNING job recovery: reclaiming jobs orphaned by a worker crash | Accepted |
 | [0025](0025-confidence-and-quality-semantics-model.md) | Confidence and quality semantics model for document processing | Accepted |
 | [0026](0026-named-api-keys-replace-the-shared-static-secret.md) | Named API keys replace the shared static secret | Accepted |
+| [0027](0027-audit-log-schema-and-redaction-policy.md) | Audit log schema and redaction policy | Accepted |

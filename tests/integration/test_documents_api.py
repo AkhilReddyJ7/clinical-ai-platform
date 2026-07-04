@@ -3,8 +3,15 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.api.routers import documents as documents_router
+from modules.audit.models import AuditAction, AuditLogEntry
+
+# Matches conftest.py's `client` fixture, which authenticates every
+# request as this caller label (TEST_API_KEY_LABEL).
+_TEST_CALLER = "test-caller"
 
 
 def test_upload_creates_document_in_registry(client: TestClient) -> None:
@@ -224,3 +231,96 @@ def test_result_while_processing_reports_active_job_status(client: TestClient) -
     assert body["job_status"] == "queued"
     assert body["extraction"] is None
     assert body["validation"] is None
+
+
+@pytest.mark.asyncio
+async def test_upload_records_an_audit_entry(
+    client: TestClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    upload = client.post(
+        "/documents",
+        files={"file": ("note.txt", b"synthetic clinical note content", "text/plain")},
+    )
+    document_id = uuid.UUID(upload.json()["id"])
+
+    async with session_factory() as session:
+        entries = (
+            (
+                await session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.document_id == document_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(entries) == 1
+    assert entries[0].caller == _TEST_CALLER
+    assert entries[0].action == AuditAction.DOCUMENT_UPLOADED
+    assert entries[0].job_id is None
+
+
+@pytest.mark.asyncio
+async def test_process_records_an_audit_entry_with_the_job_id(
+    client: TestClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    upload = client.post(
+        "/documents",
+        files={"file": ("note.txt", b"synthetic clinical note content", "text/plain")},
+    )
+    document_id = uuid.UUID(upload.json()["id"])
+
+    process_response = client.post(f"/documents/{document_id}/process")
+    job_id = uuid.UUID(process_response.json()["job_id"])
+
+    async with session_factory() as session:
+        entries = (
+            (
+                await session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.document_id == document_id,
+                        AuditLogEntry.action == AuditAction.JOB_ENQUEUED,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(entries) == 1
+    assert entries[0].caller == _TEST_CALLER
+    assert entries[0].job_id == job_id
+
+
+@pytest.mark.asyncio
+async def test_a_409_rejected_process_call_records_no_audit_entry(
+    client: TestClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The audit trail records actions that happened, not attempts --
+    enqueue_job raising IllegalTransitionError means no job was created,
+    so process_document never reaches its record_action call."""
+    upload = client.post(
+        "/documents",
+        files={"file": ("note.txt", b"synthetic clinical note content", "text/plain")},
+    )
+    document_id = uuid.UUID(upload.json()["id"])
+    client.post(f"/documents/{document_id}/process")
+
+    second = client.post(f"/documents/{document_id}/process")
+    assert second.status_code == 409
+
+    async with session_factory() as session:
+        entries = (
+            (
+                await session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.document_id == document_id,
+                        AuditLogEntry.action == AuditAction.JOB_ENQUEUED,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(entries) == 1  # only the first, successful enqueue

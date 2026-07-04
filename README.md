@@ -29,8 +29,10 @@ modules/
                    fields, via the Anthropic API (+ mock for tests)
   validation/     validation pipeline interface (required-fields rule +
                    PHI-pattern guardrail, composed together)
-  auth/           static API-key auth (X-API-Key header) on /documents/*
-  audit/ analytics/ indexing/ layout/ search/         reserved for future work
+  auth/           named API-key auth (X-API-Key header, ADR-0026) on
+                   /documents/*
+  audit/          who-did-what-when recording (ADR-0027); no query API yet
+  analytics/ indexing/ layout/ search/         reserved for future work
 
 shared/
   config/         centralized Settings (env-driven)
@@ -139,8 +141,13 @@ a breaking change from the earlier bare-key-list format. Every valid key
 still has identical access (no per-key scoping/permissions — see
 [Status & constraints](#status--constraints)); the label is resolved
 per-request and available to route handlers and structured logs as
-`caller`, so "who called this" is answerable today even though nothing
-persists it yet (that's the audit trail, still future work).
+`caller`. As of ADR-0027, uploading a document or enqueuing a processing
+job now durably records *who* did it, in a new `audit_log_entries` table
+(`modules/audit/`) — deliberately five columns with no free-text field
+(`caller`, `action`, `document_id`, `job_id`, `created_at`), so there's no
+column capable of holding raw text or PHI-shaped content in the first
+place. No query endpoint exists yet (`GET /audit` or similar) — that's
+additive future work, not part of this ADR's scope.
 
 ```bash
 curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents
@@ -157,9 +164,10 @@ fully received); after, ~10ms. See `docs/adr/0017-...`.
 
 This is deliberately named keys, not full accounts/sessions/OAuth (ADR-0026
 bounds the scope explicitly) — every key still has identical access, and
-there's no UI or multi-tenant requirement to justify more. Persisting who
-did what (an audit trail keyed on the resolved caller label) is future
-work (`modules/audit/`, not started).
+there's no UI or multi-tenant requirement to justify more. The audit trail
+(ADR-0027) records the resolved caller label against the two actions that
+exist today (upload, enqueue); it does not add scoping/permissions, and
+there's still no UI or query surface for it.
 
 ## Local development without Docker
 
@@ -458,10 +466,11 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   and **not adopted**. See `docs/adr/0015-...` and `docs/adr/0018-...`.
 - **Auth is named keys, not scoped identity.** `X-API-Key` gates
   `/documents*`, and each configured key now resolves to a name (ADR-0026)
-  — but every named key still has identical access, and nothing persists
-  who did what yet. Scoped permissions, sessions/OAuth, and an audit trail
-  are future work (`modules/audit`, not started; both explicitly out of
-  this ADR's bounded scope).
+  — every named key still has identical access. Who uploaded a document or
+  enqueued a job is now durably recorded (ADR-0027, `audit_log_entries`),
+  but there's no query API for it yet, and no scoped
+  permissions/sessions/OAuth — both explicitly out of these two ADRs'
+  bounded scope.
 - **Field extraction is real, single-provider (Anthropic), and requires a
   key you supply.** `AnthropicFieldExtractionPipeline` uses a forced tool
   call against the Anthropic API — no provider-agnostic tree was built in

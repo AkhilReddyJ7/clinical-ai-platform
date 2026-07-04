@@ -22,6 +22,7 @@ from apps.api.dependencies import (
     get_validation_pipeline,
 )
 from apps.api.main import app
+from modules.audit import models as audit_models  # noqa: F401  (registers ORM table)
 from modules.extraction.mock import MockFieldExtractionPipeline
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
 from modules.ingestion.models import Document, DocumentStatus

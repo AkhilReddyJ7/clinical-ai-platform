@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_storage
 from apps.api.schemas import DocumentListOut, ProcessEnqueuedOut, ProcessingStatusOut
+from modules.audit.models import AuditAction
+from modules.audit.service import record_action
 from modules.auth.api_key import require_api_key
 from modules.ingestion import service as ingestion_service
 from modules.ingestion.models import DocumentStatus
@@ -80,6 +82,9 @@ async def upload_document(
     logger.info(
         "document uploaded id=%s filename=%s caller=%s", document.id, document.filename, caller
     )
+    await record_action(
+        db, caller=caller, action=AuditAction.DOCUMENT_UPLOADED, document_id=document.id
+    )
     return DocumentOut.model_validate(document)
 
 
@@ -143,6 +148,13 @@ async def process_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
 
     logger.info("job enqueued id=%s document_id=%s caller=%s", job.id, document_id, caller)
+    await record_action(
+        db,
+        caller=caller,
+        action=AuditAction.JOB_ENQUEUED,
+        document_id=document_id,
+        job_id=job.id,
+    )
     return ProcessEnqueuedOut(document_id=document_id, job_id=job.id, job_status=job.status)
 
 
