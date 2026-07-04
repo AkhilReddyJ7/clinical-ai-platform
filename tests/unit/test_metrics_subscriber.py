@@ -15,8 +15,8 @@ def _reset_metrics() -> None:
 def _event(event_type: EventType, **metadata: object) -> Event:
     return Event(
         event_type=event_type,
-        job_id=uuid.uuid4(),
-        document_id=uuid.uuid4(),
+        job_id=str(uuid.uuid4()),
+        document_id=str(uuid.uuid4()),
         metadata=metadata,
     )
 

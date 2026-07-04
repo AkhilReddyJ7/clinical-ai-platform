@@ -163,8 +163,8 @@ async def run_worker_loop(
         emit_event(
             Event(
                 event_type=EventType.JOB_CLAIMED,
-                job_id=job.id,
-                document_id=job.document_id,
+                job_id=str(job.id),
+                document_id=str(job.document_id),
                 metadata={"status": job.status.value},
             )
         )
@@ -185,8 +185,8 @@ async def run_worker_loop(
                     emit_event(
                         Event(
                             event_type=EventType.JOB_RETRYING,
-                            job_id=job.id,
-                            document_id=job.document_id,
+                            job_id=str(job.id),
+                            document_id=str(job.document_id),
                             metadata={
                                 "duration_ms": duration * 1000,
                                 "error_type": type(exc).__name__,
@@ -199,8 +199,8 @@ async def run_worker_loop(
                     emit_event(
                         Event(
                             event_type=EventType.JOB_FAILED,
-                            job_id=job.id,
-                            document_id=job.document_id,
+                            job_id=str(job.id),
+                            document_id=str(job.document_id),
                             metadata={
                                 "duration_ms": duration * 1000,
                                 "error_type": type(exc).__name__,
@@ -215,8 +215,8 @@ async def run_worker_loop(
             emit_event(
                 Event(
                     event_type=EventType.JOB_COMPLETED,
-                    job_id=job.id,
-                    document_id=job.document_id,
+                    job_id=str(job.id),
+                    document_id=str(job.document_id),
                     metadata={"duration_ms": duration * 1000},
                 )
             )

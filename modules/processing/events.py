@@ -1,5 +1,5 @@
 """In-process event dispatch core (Increment 8; made pure in Increment 8's
-structural refactor).
+structural refactor; schema-stabilized in Increment 10).
 
 Pure dispatch only: EventType, Event, subscribe/unsubscribe/
 clear_subscribers, emit_event. This module has no knowledge of what a
@@ -10,6 +10,19 @@ modules.processing.observability.registry.register_default_subscribers,
 never here and never inside emit_event itself — see that module for the
 metrics/logging consumers execution code actually gets.
 
+Schema contract (Increment 10): the *only* fields any consumer may rely
+on are event_type, job_id, document_id, metadata, and timestamp — exactly
+the dataclass fields below, nothing more. `job_id`/`document_id` are
+plain `str`/`str | None`, not `uuid.UUID`: this module has no opinion on
+what identifier scheme a producer uses, only that it's been rendered to
+a string by the time it reaches an Event. `metadata` is guaranteed to
+always be a `dict` (never `None`), but its *keys* are explicitly NOT
+part of this contract — different EventTypes carry different metadata
+shapes, the shape can change over time, and no subscriber may assume any
+particular key is present without checking (see
+modules.processing.observability for the required defensive-access
+pattern: `.get(...)`, never `metadata["..."]`).
+
 Not external infrastructure: no Kafka, no Redis, no OpenTelemetry. A
 plain in-process list of synchronous callables, dispatched synchronously
 in registration order.
@@ -17,7 +30,6 @@ in registration order.
 
 import enum
 import logging
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,8 +58,8 @@ def _utcnow() -> datetime:
 @dataclass
 class Event:
     event_type: EventType
-    job_id: uuid.UUID
-    document_id: uuid.UUID | None
+    job_id: str
+    document_id: str | None
     metadata: dict[str, object] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=_utcnow)
 

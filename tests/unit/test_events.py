@@ -43,8 +43,8 @@ def _clear_subscribers_around_test() -> Iterator[None]:
 def _event(event_type: EventType = EventType.JOB_CLAIMED, **metadata: object) -> Event:
     return Event(
         event_type=event_type,
-        job_id=uuid.uuid4(),
-        document_id=uuid.uuid4(),
+        job_id=str(uuid.uuid4()),
+        document_id=str(uuid.uuid4()),
         metadata=metadata,
     )
 

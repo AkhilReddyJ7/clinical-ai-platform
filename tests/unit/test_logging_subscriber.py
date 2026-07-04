@@ -10,8 +10,8 @@ from modules.processing.observability.logging_subscriber import _logging_subscri
 def _event(event_type: EventType, **metadata: object) -> Event:
     return Event(
         event_type=event_type,
-        job_id=uuid.uuid4(),
-        document_id=uuid.uuid4(),
+        job_id=str(uuid.uuid4()),
+        document_id=str(uuid.uuid4()),
         metadata=metadata,
     )
 
@@ -41,7 +41,7 @@ def test_logs_at_info_level(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def test_handles_a_missing_document_id(caplog: pytest.LogCaptureFixture) -> None:
-    event = Event(event_type=EventType.JOB_FAILED, job_id=uuid.uuid4(), document_id=None)
+    event = Event(event_type=EventType.JOB_FAILED, job_id=str(uuid.uuid4()), document_id=None)
 
     with caplog.at_level(logging.INFO, logger="clinical-ai-platform"):
         _logging_subscriber(event)  # must not raise

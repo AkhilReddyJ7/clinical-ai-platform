@@ -68,8 +68,8 @@ async def test_job_claim_emits_event_and_is_counted(
 
     claimed_events = [e for e in collected_events if e.event_type == EventType.JOB_CLAIMED]
     assert len(claimed_events) == 1
-    assert claimed_events[0].job_id == job.id
-    assert claimed_events[0].document_id == job.document_id
+    assert claimed_events[0].job_id == str(job.id)
+    assert claimed_events[0].document_id == str(job.document_id)
     assert claimed_events[0].metadata["status"] == "running"
     assert metrics.jobs_claimed == 1
 
@@ -121,7 +121,7 @@ async def test_transient_failure_emits_retrying_event_and_is_counted(
 
     retrying_events = [e for e in collected_events if e.event_type == EventType.JOB_RETRYING]
     assert len(retrying_events) == 1
-    assert retrying_events[0].job_id == job.id
+    assert retrying_events[0].job_id == str(job.id)
     assert retrying_events[0].metadata["error_type"] == "TransientProcessingError"
     assert retrying_events[0].metadata["error"] == "rate limited"
     assert metrics.retries == 1

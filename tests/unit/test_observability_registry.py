@@ -33,7 +33,7 @@ def _isolate_registry_state() -> Iterator[None]:
 
 
 def _event(event_type: EventType = EventType.JOB_CLAIMED) -> Event:
-    return Event(event_type=event_type, job_id=uuid.uuid4(), document_id=uuid.uuid4())
+    return Event(event_type=event_type, job_id=str(uuid.uuid4()), document_id=str(uuid.uuid4()))
 
 
 def test_register_default_subscribers_wires_up_metrics() -> None:

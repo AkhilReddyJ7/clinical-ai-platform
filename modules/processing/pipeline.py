@@ -212,8 +212,8 @@ def _emit_stage_started(job: Job, document_id: uuid.UUID, stage: str) -> None:
     emit_event(
         Event(
             event_type=EventType.PIPELINE_STAGE_STARTED,
-            job_id=job.id,
-            document_id=document_id,
+            job_id=str(job.id),
+            document_id=str(document_id),
             metadata={"stage": stage},
         )
     )
@@ -241,8 +241,8 @@ def _emit_stage_completed(
     emit_event(
         Event(
             event_type=EventType.PIPELINE_STAGE_COMPLETED,
-            job_id=job.id,
-            document_id=document_id,
+            job_id=str(job.id),
+            document_id=str(document_id),
             metadata=metadata,
         )
     )
@@ -333,8 +333,8 @@ async def run_processing_pipeline(
     emit_event(
         Event(
             event_type=EventType.JOB_STARTED,
-            job_id=job.id,
-            document_id=document.id,
+            job_id=str(job.id),
+            document_id=str(document.id),
             metadata={"status": job.status.value},
         )
     )

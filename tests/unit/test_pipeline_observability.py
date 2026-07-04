@@ -113,8 +113,8 @@ async def test_job_started_event_is_emitted_with_job_and_document_ids(
 
     started = [e for e in collected_events if e.event_type == EventType.JOB_STARTED]
     assert len(started) == 1
-    assert started[0].job_id == job.id
-    assert started[0].document_id == job.document_id
+    assert started[0].job_id == str(job.id)
+    assert started[0].document_id == str(job.document_id)
 
 
 @pytest.mark.asyncio
@@ -144,8 +144,8 @@ async def test_each_stage_emits_started_and_completed_events(
 
     for event in collected_events:
         if event.event_type == EventType.PIPELINE_STAGE_COMPLETED:
-            assert event.job_id == job.id
-            assert event.document_id == job.document_id
+            assert event.job_id == str(job.id)
+            assert event.document_id == str(job.document_id)
             assert isinstance(event.metadata["duration_ms"], (int, float))
             assert event.metadata["duration_ms"] >= 0.0
 
