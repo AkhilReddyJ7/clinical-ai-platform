@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from modules.ingestion.models import Document, DocumentStatus
 from modules.processing.models import Job, JobStatus
-from modules.processing.repository import claim_next_job
+from modules.processing.repository import claim_next_job, reclaim_stale_job
 from shared.database.base import Base
 from shared.database.session import settings
 
@@ -163,6 +163,81 @@ async def test_concurrent_reclaims_never_double_claim_the_same_retrying_job(
                 assert job is not None
                 assert job.status == JobStatus.RUNNING
                 assert job.next_attempt_at is None
+    finally:
+        async with session_factory() as cleanup_session:
+            for job_id in job_ids:
+                job = await cleanup_session.get(Job, job_id)
+                if job is not None:
+                    await cleanup_session.delete(job)
+            doc = await cleanup_session.get(Document, document.id)
+            if doc is not None:
+                await cleanup_session.delete(doc)
+            await cleanup_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stale_scans_never_double_reclaim_the_same_job(
+    pg_engine: AsyncEngine,
+) -> None:
+    """Same SKIP LOCKED guarantee, exercised against reclaim_stale_job
+    (ADR-0024's stale-`running`-job detection scan) — a third, independent
+    query added by this increment, on top of the two claim_next_job paths
+    already covered above.
+    """
+    session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    job_count = 5
+    scanner_count = 10
+    stale_since = datetime.now(timezone.utc) - timedelta(seconds=9999)
+
+    async with session_factory() as setup_session:
+        document = Document(
+            id=uuid.uuid4(),
+            filename="report.txt",
+            content_type="text/plain",
+            size_bytes=3,
+            storage_key=f"{uuid.uuid4()}/report.txt",
+            status=DocumentStatus.PROCESSING,
+        )
+        setup_session.add(document)
+        await setup_session.commit()
+
+        jobs = [
+            Job(document_id=document.id, status=JobStatus.RUNNING, retry_count=0)
+            for _ in range(job_count)
+        ]
+        setup_session.add_all(jobs)
+        await setup_session.commit()
+        job_ids = {job.id for job in jobs}
+
+        # updated_at has an onupdate default set by the insert above;
+        # backdate it directly, same as the unit-level fixture does.
+        for stale_job in jobs:
+            stale_job.updated_at = stale_since
+        setup_session.add_all(jobs)
+        await setup_session.commit()
+
+    try:
+
+        async def _reclaim_with_own_session() -> uuid.UUID | None:
+            async with session_factory() as session:
+                reclaimed = await reclaim_stale_job(session)
+                return reclaimed.id if reclaimed is not None else None
+
+        results = await asyncio.gather(*(_reclaim_with_own_session() for _ in range(scanner_count)))
+
+        reclaimed_ids = [job_id for job_id in results if job_id is not None]
+        empty_results = [job_id for job_id in results if job_id is None]
+
+        assert len(reclaimed_ids) == job_count
+        assert set(reclaimed_ids) == job_ids
+        assert len(empty_results) == scanner_count - job_count
+
+        async with session_factory() as verify_session:
+            for job_id in job_ids:
+                job = await verify_session.get(Job, job_id)
+                assert job is not None
+                assert job.status == JobStatus.RETRYING
+                assert job.retry_count == 1
     finally:
         async with session_factory() as cleanup_session:
             for job_id in job_ids:

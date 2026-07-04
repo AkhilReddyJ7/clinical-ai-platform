@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     job_retry_backoff_max_seconds: float = 60.0
     job_retry_backoff_jitter_seconds: float = 1.0
 
+    # ADR-0024: a `running` job is stale if no writer has touched it (i.e.
+    # Job.updated_at) within this many seconds -- its worker is presumed
+    # dead (crash, OOM kill, host failure). Reused as the sole liveness
+    # signal, no heartbeat column. Comfortably above any single job
+    # attempt's expected wall-clock cost (OCR + one Anthropic call, itself
+    # capped by anthropic_timeout_seconds) so a merely slow attempt is
+    # never mistaken for a dead one.
+    job_stale_timeout_seconds: float = 300.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

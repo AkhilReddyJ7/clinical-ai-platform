@@ -46,6 +46,7 @@ from modules.processing.repository import (
     mark_job_completed,
     mark_job_failed,
     mark_job_retry,
+    reclaim_stale_job,
 )
 from modules.validation.base import ValidationPipeline
 from modules.validation.composite import CompositeValidationPipeline
@@ -147,6 +148,16 @@ async def run_worker_loop(
     long-running process_job_fn call never holds a claim's transaction
     open). An empty queue or a transient database error both fall through
     to the same poll-interval sleep, so the loop never busy-spins.
+
+    Whenever an iteration finds no claimable work, it also takes one
+    ADR-0024 stale-job detection scan (reclaim_stale_job) before sleeping
+    — the polling responsibility ADR-0024 assigns to this loop, on this
+    same cadence, rather than a separate sweeper process. It runs only on
+    an otherwise-idle iteration, not on every iteration: a worker that
+    just claimed real work is about to block on it for a while regardless
+    of when the next scan happens, and with multiple worker processes
+    (this loop's normal deployment shape) an idle iteration on any one of
+    them comes around often enough for this to not matter in practice.
     """
     while True:
         job: Job | None = None
@@ -159,6 +170,27 @@ async def run_worker_loop(
             logger.exception("worker: error while claiming next job")
 
         if job is None:
+            reclaimed: Job | None = None
+            try:
+                async with session_factory() as session:
+                    reclaimed = await reclaim_stale_job(session)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("worker: error while reclaiming stale jobs")
+
+            if reclaimed is not None:
+                emit_event(
+                    Event(
+                        event_type=EventType.JOB_STALE_SKIPPED,
+                        job_id=str(reclaimed.id),
+                        document_id=str(reclaimed.document_id),
+                        metadata={
+                            "outcome_status": reclaimed.status.value,
+                            "retry_count": reclaimed.retry_count,
+                        },
+                    )
+                )
             await asyncio.sleep(poll_interval_seconds)
             continue
 

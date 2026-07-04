@@ -16,6 +16,13 @@ recovery, ADR-0024) affects zero rows and gets None back rather than
 clobbering a state some other writer already moved past. These functions
 perform only that guarded state update; which outcome to call, and why,
 is the caller's decision (the worker loop), not this module's.
+
+``reclaim_stale_job`` is ADR-0024's detection-and-recovery half: it finds
+a `running` job nothing has touched recently and routes it through
+``mark_job_retry``/``mark_job_failed`` itself (unlike the outcome
+functions above, this one *does* decide which to call — staleness isn't
+an execution-reported outcome, there's no caller-side classification to
+defer to).
 """
 
 import random
@@ -181,4 +188,44 @@ async def mark_job_retry(db: AsyncSession, job_id: uuid.UUID) -> Job | None:
         to_status=JobStatus.RETRYING,
         increment_retry_count=True,
         next_attempt_at=_utcnow() + timedelta(seconds=delay),
+    )
+
+
+async def reclaim_stale_job(db: AsyncSession) -> Job | None:
+    """Detect and recover one stale `running` job, per ADR-0024.
+
+    A job is stale if it's `running` and Job.updated_at (the sole liveness
+    signal — no heartbeat column, per ADR-0024 section 1) is older than
+    job_stale_timeout_seconds: its worker is presumed dead (crash, OOM
+    kill, host failure), not merely slow. Recovery reuses the exact
+    retry-budget-aware path ADR-0023 already defines for an ordinary
+    transient failure — running -> retrying if budget remains, running ->
+    failed if it's already exhausted (ADR-0024 section 4) — because a
+    stale claim is a recovery condition on an existing state, not a new
+    failure classification (ADR-0024 explicitly does not extend ADR-0023's
+    taxonomy). A reclaimed-to-retrying job re-enters the same
+    retrying -> running backoff path claim_next_job already implements
+    (ADR-0023) — no separate resume mechanism.
+
+    Same SKIP LOCKED atomicity as claim_next_job: a stale job already
+    being reclaimed by another worker's concurrent scan is simply skipped
+    in favor of the next stale candidate, or None.
+    """
+    settings = get_settings()
+    cutoff = _utcnow() - timedelta(seconds=settings.job_stale_timeout_seconds)
+    stmt = (
+        select(Job)
+        .where(Job.status == JobStatus.RUNNING, Job.updated_at < cutoff)
+        .order_by(Job.updated_at.asc())
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    job = (await db.execute(stmt)).scalar_one_or_none()
+    if job is None:
+        return None
+
+    if job.retry_count < settings.job_max_retry_attempts:
+        return await mark_job_retry(db, job.id)
+    return await mark_job_failed(
+        db, job.id, "stale job: exceeded job_stale_timeout_seconds without completing"
     )

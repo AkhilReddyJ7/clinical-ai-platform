@@ -15,9 +15,12 @@ scope):
                       is_retryable(exc) is False)
     JOB_RETRYING   = transient failure with retry scheduled (worker.py,
                       is_retryable(exc) is True)
-    JOB_STALE_SKIPPED = job ignored due to staleness (reserved; nothing
-                      emits this yet — ADR-0024's detection loop remains
-                      unimplemented, per Increments 7/9)
+    JOB_STALE_SKIPPED = a `running` job was detected stale and recovered
+                      (worker.py's ADR-0024 detection scan, queue-level —
+                      distinct from JOB_RETRYING/JOB_FAILED even when the
+                      underlying transition is the same edge, because the
+                      *reason* differs: crash recovery, not an outcome
+                      this worker's own attempt reached)
 
 validate_event_sequence() below is a test-only diagnostic (explicitly
 not runtime enforcement, per this increment's section 5) that flags

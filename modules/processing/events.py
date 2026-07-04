@@ -43,11 +43,13 @@ class EventType(str, enum.Enum):
     JOB_COMPLETED = "job_completed"
     JOB_RETRYING = "job_retrying"
     JOB_FAILED = "job_failed"
-    # Reserved for ADR-0024's stale-job detection/reclaim loop, which
-    # remains unimplemented (deferred since Increment 4; carried forward
-    # as an inert counter in WorkerMetrics.stale_reclaims). Nothing emits
-    # this yet — it exists so that future detection logic has an event to
-    # emit into rather than inventing one alongside it.
+    # Emitted by worker.py's stale-job detection scan (ADR-0024) when it
+    # finds and recovers a `running` job nothing has touched recently —
+    # deliberately distinct from JOB_RETRYING/JOB_FAILED (the ordinary
+    # in-band-exception path), even though the underlying DB transition
+    # is the same running -> retrying/failed edge: the *reason* differs
+    # (crash recovery vs. an outcome this worker's own attempt reached),
+    # and ADR-0024 names that distinction as worth keeping observable.
     JOB_STALE_SKIPPED = "job_stale_skipped"
 
 

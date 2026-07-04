@@ -34,13 +34,10 @@ class WorkerMetrics:
     completions: int = 0
     retries: int = 0
     terminal_failures: int = 0
-    # Reserved for ADR-0024's stale-job detection/reclaim loop, which
-    # remains unimplemented (deferred since Increment 4 — see that ADR's
-    # "no implementation yet" consequence). Nothing in this codebase calls
-    # record_stale_reclaim yet; it exists now so the future detection
-    # loop has a counter to call into rather than inventing one alongside
-    # the detection logic itself. Exercised directly in tests, not via
-    # any real trigger.
+    # Incremented via JOB_STALE_SKIPPED (worker.py's ADR-0024 stale-job
+    # detection scan), one per `running` job recovered because nothing
+    # had touched it recently -- a distinct count from `retries`, which
+    # only reflects a job's own in-band exception path.
     stale_reclaims: int = 0
     _stage_durations: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
 
