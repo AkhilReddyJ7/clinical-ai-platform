@@ -6,6 +6,8 @@ observability and have their own test files) — so these tests prove the
 core works independently of any observability consumer.
 """
 
+import ast
+import inspect
 import logging
 import uuid
 from collections.abc import Iterator
@@ -48,19 +50,51 @@ def _event(event_type: EventType = EventType.JOB_CLAIMED, **metadata: object) ->
 
 
 def test_event_core_has_no_observability_imports() -> None:
-    """Structural guarantee: modules.processing.events must not import
-    WorkerMetrics or the app logger — that coupling belongs entirely to
-    modules.processing.observability now.
+    """Structural guarantee (object-graph check): modules.processing.events
+    must not import WorkerMetrics, the app logger, or any subscriber —
+    that coupling belongs entirely to modules.processing.observability.
     """
     assert not hasattr(events_module, "metrics")
     assert not hasattr(events_module, "logger")
     assert not hasattr(events_module, "_metrics_subscriber")
     assert not hasattr(events_module, "_logging_subscriber")
+    assert not hasattr(events_module, "register_default_subscribers")
+
+
+def test_event_core_has_no_forbidden_imports_at_the_ast_level() -> None:
+    """Structural guarantee (AST-level check): parses events.py's actual
+    import statements rather than grepping raw text, so an explanatory
+    comment/docstring that merely *mentions* a forbidden module (e.g.
+    "deliberately not shared.logging.logger") can never produce a false
+    positive the way a plain substring search would. Also immune to
+    whatever else happens to already be imported elsewhere in the test
+    session (unlike checking sys.modules, which every other test file
+    importing worker.py/pipeline.py would have already populated
+    regardless of what events.py itself does).
+    """
+    tree = ast.parse(inspect.getsource(events_module))
+    imported_modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.append(node.module)
+
+    forbidden_prefixes = (
+        "modules.processing.metrics",
+        "shared.logging",
+        "modules.processing.observability",
+    )
+    for module_name in imported_modules:
+        assert not module_name.startswith(
+            forbidden_prefixes
+        ), f"events.py must not import {module_name!r}"
 
 
 def test_events_module_does_not_self_register_any_subscribers() -> None:
     # clear_subscribers() (in the autouse fixture) already emptied the
-    # list; nothing in this module repopulates it on its own.
+    # list; nothing in this module repopulates it on its own — merely
+    # having events.py loaded never registers anything.
     assert events_module._subscribers == []
 
 

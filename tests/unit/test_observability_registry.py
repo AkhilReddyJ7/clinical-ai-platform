@@ -4,9 +4,12 @@ from collections.abc import Iterator
 
 import pytest
 
+import modules.processing.events as events_module
 import modules.processing.observability.registry as registry_module
 from modules.processing.events import Event, EventType, clear_subscribers, emit_event, subscribe
 from modules.processing.metrics import metrics
+from modules.processing.observability.logging_subscriber import _logging_subscriber
+from modules.processing.observability.metrics_subscriber import _metrics_subscriber
 from modules.processing.observability.registry import (
     _reset_for_testing,
     register_default_subscribers,
@@ -62,6 +65,23 @@ def test_calling_register_default_subscribers_twice_does_not_double_subscribe() 
     emit_event(_event(EventType.JOB_CLAIMED))
 
     assert metrics.jobs_claimed == 1
+
+
+def test_calling_register_default_subscribers_many_times_yields_exactly_one_of_each() -> None:
+    """Direct count, not just an observed-effect proxy: the requirement is
+    literally "exactly 1 metrics subscriber, exactly 1 logging subscriber,
+    no duplicates allowed" — checked against the subscriber list itself.
+    """
+    register_default_subscribers()
+    register_default_subscribers()
+    register_default_subscribers()
+
+    metrics_count = sum(1 for h in events_module._subscribers if h is _metrics_subscriber)
+    logging_count = sum(1 for h in events_module._subscribers if h is _logging_subscriber)
+
+    assert metrics_count == 1
+    assert logging_count == 1
+    assert len(events_module._subscribers) == 2
 
 
 def test_subscribers_are_registered_only_via_the_registry() -> None:
