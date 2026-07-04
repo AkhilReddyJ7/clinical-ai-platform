@@ -1,4 +1,32 @@
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+
+    # A dedicated one-shot service, not a step inside api's or worker's own
+    # command: both of those start concurrently once postgres is healthy,
+    # and each running its own `alembic upgrade head` races the other on
+    # a *fresh* database -- both see no `alembic_version` table yet and
+    # both try to create it, and Postgres correctly rejects one of the two
+    # concurrent CREATE TABLEs with a unique-violation, crashing whichever
+    # container loses the race. Confirmed directly: this only reproduces
+    # against a genuinely empty postgres_data volume (exactly what CI
+    # always has), never against a volume that already has schema applied
+    # from a prior run -- which is why local testing against a reused
+    # volume didn't catch it. Running the migration exactly once, before
+    # either long-running process starts, removes the race entirely
+    # without making api and worker depend on each other.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-clinical_ai}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    command: uv run alembic upgrade head
+    restart: "no"
+
   api:
     build:
       context: .
@@ -17,12 +45,10 @@ services:
       API_KEYS: ${API_KEYS:-local-dev:local-dev-key}
 
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
-    command: >
-      sh -c "uv run alembic upgrade head &&
-             uv run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: uv run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
@@ -53,16 +79,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
-    # Runs its own `alembic upgrade head` (idempotent, safe alongside
-    # api's) rather than depending on api's own healthcheck -- keeps the
-    # two services independent, matching how this would scale to
-    # multiple worker replicas with no api dependency chain between them.
-    command: >
-      sh -c "uv run alembic upgrade head &&
-             uv run python -m apps.worker.main"
+    # Depends on the same one-shot `migrate` service api does, not on api
+    # itself -- keeps api and worker independent of each other, matching
+    # how this would scale to multiple worker replicas with no api
+    # dependency chain between them.
+    command: uv run python -m apps.worker.main
 
   postgres:
     image: postgres:16-alpine
