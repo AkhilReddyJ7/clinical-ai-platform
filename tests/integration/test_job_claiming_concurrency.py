@@ -19,12 +19,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from modules.ingestion.models import Document, DocumentStatus
 from modules.processing.models import Job, JobStatus
-from modules.processing.repository import claim_next_job, reclaim_stale_job
+from modules.processing.repository import claim_next_job, enqueue_job, reclaim_stale_job
+from modules.processing.state_machine import IllegalTransitionError
 from shared.database.base import Base
 from shared.database.session import settings
 
@@ -244,6 +246,75 @@ async def test_concurrent_stale_scans_never_double_reclaim_the_same_job(
                 job = await cleanup_session.get(Job, job_id)
                 if job is not None:
                     await cleanup_session.delete(job)
+            doc = await cleanup_session.get(Document, document.id)
+            if doc is not None:
+                await cleanup_session.delete(doc)
+            await cleanup_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enqueue_calls_on_the_same_document_never_both_succeed(
+    pg_engine: AsyncEngine,
+) -> None:
+    """ADR-0022's `/process` enqueue path, concurrency-checked: two
+    callers racing to enqueue a job for the same document (the
+    "duplicate-submission" case ADR-0020 requires be rejected outright)
+    must not both create a job. enqueue_job's locked read of the document
+    row (SELECT ... FOR UPDATE, no SKIP LOCKED -- a second caller should
+    wait for the first's transaction, not silently miss it) is what
+    SQLite can't prove, per this module's own docstring.
+    """
+    session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    caller_count = 10
+
+    async with session_factory() as setup_session:
+        document = Document(
+            id=uuid.uuid4(),
+            filename="report.txt",
+            content_type="text/plain",
+            size_bytes=3,
+            storage_key=f"{uuid.uuid4()}/report.txt",
+            status=DocumentStatus.UPLOADED,
+        )
+        setup_session.add(document)
+        await setup_session.commit()
+
+    try:
+
+        async def _enqueue_with_own_session() -> uuid.UUID | None:
+            async with session_factory() as session:
+                try:
+                    job = await enqueue_job(session, document.id)
+                except IllegalTransitionError:
+                    return None
+                return job.id if job is not None else None
+
+        results = await asyncio.gather(*(_enqueue_with_own_session() for _ in range(caller_count)))
+
+        succeeded = [job_id for job_id in results if job_id is not None]
+        assert len(succeeded) == 1
+
+        async with session_factory() as verify_session:
+            stored_document = await verify_session.get(Document, document.id)
+            assert stored_document is not None
+            assert stored_document.status == DocumentStatus.PROCESSING
+
+            all_jobs = (
+                (await verify_session.execute(select(Job).where(Job.document_id == document.id)))
+                .scalars()
+                .all()
+            )
+            assert len(all_jobs) == 1
+            assert all_jobs[0].id == succeeded[0]
+    finally:
+        async with session_factory() as cleanup_session:
+            jobs = (
+                (await cleanup_session.execute(select(Job).where(Job.document_id == document.id)))
+                .scalars()
+                .all()
+            )
+            for job in jobs:
+                await cleanup_session.delete(job)
             doc = await cleanup_session.get(Document, document.id)
             if doc is not None:
                 await cleanup_session.delete(doc)

@@ -16,7 +16,9 @@ data**.
 ```
 apps/
   api/            FastAPI app: HTTP layer, routing, dependency wiring
-  worker/         reserved for a future async processing worker
+  worker/         background worker process entrypoint (docker-compose's
+                   `worker` service) -- claims and runs jobs queued by
+                   POST /process; see modules/processing/
 
 modules/
   ingestion/      document registry, upload handling, storage abstraction
@@ -97,14 +99,20 @@ This starts:
 - `api` — FastAPI app on `http://localhost:8000`, with its own Docker
   healthcheck hitting `/health`. The image includes `tesseract-ocr` for
   real, local OCR — no API key or external vendor needed for OCR itself.
+  `POST /documents/{id}/process` only enqueues a job here (ADR-0022) — it
+  doesn't run the pipeline itself.
+- `worker` — the background worker process (`apps/worker/main.py`) that
+  actually claims and runs enqueued jobs: OCR → PHI gate → field
+  extraction → validation. Same image as `api`, same uploads volume, no
+  exposed port.
 - `postgres` — Postgres 16, with a named volume for data and another for
   uploaded files (`uploads_data`, mounted at `/app/data/uploads`)
 
 Structured field extraction (`raw_text` -> `fields`) does need a real
 Anthropic API key: set `ANTHROPIC_API_KEY` in `.env` to enable it. Without
-one, uploads still work and OCR still runs — `POST /documents/{id}/process`
-fails cleanly with `status: failed` at the field-extraction step (no crash,
-no partial writes), rather than silently succeeding with fake data.
+one, uploads still work and OCR still runs — the worker fails the document
+cleanly with `status: failed` at the field-extraction step (no crash, no
+partial writes), rather than silently succeeding with fake data.
 
 Check it's up:
 
@@ -313,55 +321,73 @@ Paginated, most recently uploaded first. `limit` defaults to 20 (max 100),
 curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}
 ```
 
-**Run the extraction + validation pipeline**
+**Enqueue the extraction + validation pipeline**
 
 ```bash
 curl -X POST -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}/process
 ```
 
-Runs real OCR against the stored file (Tesseract for images/PDF, direct
-decode for `text/plain`) to produce real `raw_text`, then PHI-checks that
-text **before** anything else happens — including before the field-extraction
-LLM is ever called: if PHI-shaped content is found, a redacted placeholder
-is stored instead of the real text (`fields` become `{}` too, the LLM call
-is skipped entirely), and the document's status becomes `failed`. Otherwise
-the clean `raw_text` is sent to the Anthropic API
-(`AnthropicFieldExtractionPipeline`, see [Architecture](#architecture)) to
-extract real structured `fields` via a forced tool call, the full
-validation pipeline runs against the real result, and status becomes
-`validated` or `failed` based on the validators (including, now genuinely,
-whether the LLM actually found all the required fields). A field-extraction
-failure (missing/invalid API key, rate limit, provider error) also fails
-cleanly — the real, already-PHI-checked `raw_text` is still persisted,
-only `fields` stays empty. See `docs/adr/0011-...` and `docs/adr/0019-...`.
+As of ADR-0022, this **enqueues a job and returns immediately** (`202`,
+with the job's id and initial `queued` status) — it no longer runs the
+pipeline inline. The `worker` service (a separate long-running process,
+`apps/worker/main.py`, its own docker-compose service) claims queued jobs
+and runs the same OCR → PHI-gate → field-extraction → validation pipeline
+described below; poll `GET .../result` (next section) to see progress and
+the eventual outcome. `404` if the document doesn't exist; `409` if it
+already has an active job or is already `validated` — see
+`docs/adr/0022-...`.
+
+The pipeline itself runs real OCR against the stored file (Tesseract for
+images/PDF, direct decode for `text/plain`) to produce real `raw_text`,
+then PHI-checks that text **before** anything else happens — including
+before the field-extraction LLM is ever called: if PHI-shaped content is
+found, a redacted placeholder is stored instead of the real text (`fields`
+become `{}` too, the LLM call is skipped entirely), and the document's
+status becomes `failed`. Otherwise the clean `raw_text` is sent to the
+Anthropic API (`AnthropicFieldExtractionPipeline`, see
+[Architecture](#architecture)) to extract real structured `fields` via a
+forced tool call, the full validation pipeline runs against the real
+result, and status becomes `validated` or `failed` based on the
+validators (including, now genuinely, whether the LLM actually found all
+the required fields). A field-extraction failure classified transient
+(rate limit, connection error, 5xx) is retried with backoff up to a
+bounded budget (`docs/adr/0023-...`); a terminal failure (missing/invalid
+API key, a 4xx, or budget exhaustion) fails the document cleanly — the
+real, already-PHI-checked `raw_text` is still persisted, only `fields`
+stays empty. See `docs/adr/0011-...` and `docs/adr/0019-...`.
 
 If the uploaded bytes don't actually match the declared content type
 (corrupted file, mismatched `Content-Type`), extraction fails cleanly —
-`200` with `status: failed` and a clear `issues` message — rather than a
-raw `500` and a document stuck in `processing` forever. See
+`status: failed` and a clear `issues` message in `GET .../result` — rather
+than a raw `500` and a document stuck in `processing` forever. See
 `docs/adr/0012-...`.
 
-OCR runs off the request's event loop (`starlette.concurrency.run_in_threadpool`),
-so one large document being processed doesn't stall other requests —
-including `/health` — while it runs. Measured directly: a 25-page PDF
-blocked a concurrent `/health` call for the full ~20s OCR took before this
-fix, ~0.03s after. See `docs/adr/0013-...`.
+OCR runs off the worker loop's event loop
+(`starlette.concurrency.run_in_threadpool`), and the worker process is
+entirely separate from the API process, so one large or slow document
+being processed never stalls the API — including `/health` — while it
+runs. See `docs/adr/0013-...`.
 
 PDFs over `MAX_PDF_PAGES` (default 50) are rejected immediately rather
-than processed page-by-page and failed at the end — a 51-page PDF returns
-`status: failed` in ~50ms instead of taking as long as it would to
-actually OCR every page. Unusually large or malformed images (a
-decompression-bomb-shaped file) also fail cleanly rather than crashing.
-See `docs/adr/0016-...`.
+than processed page-by-page and failed at the end. Unusually large or
+malformed images (a decompression-bomb-shaped file) also fail cleanly
+rather than crashing. See `docs/adr/0016-...`.
 
-**Fetch the processing result**
+**Fetch the processing status/result**
 
 ```bash
 curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}/result
 ```
 
-Returns the document, its `ExtractionResult`, and its `ValidationResult`
-together. Returns `404` if the document hasn't been processed yet.
+The one place to check both "what's the status" and "what's the result"
+(ADR-0022). Always `200` except when the document itself doesn't exist
+(`404`) — every other case, including "never submitted" and "processing
+failed", is `200` with the state discriminated in the body:
+- Never submitted: `document.status: "uploaded"`, nothing else.
+- In progress: `document.status: "processing"`, plus `job_status`
+  (`queued` / `running` / `retrying`) for the active job.
+- Completed or failed: `document.status: "validated"`/`"failed"`, plus
+  the `extraction`/`validation` results.
 
 ## End-to-end demo flow
 
@@ -376,10 +402,10 @@ DOC_ID=$(curl -s -X POST http://localhost:8000/documents \
 # 2. confirm it's in the registry
 curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID | python3 -m json.tool
 
-# 3. run it through extraction + validation
+# 3. enqueue it for extraction + validation (returns immediately, 202)
 curl -s -X POST -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/process | python3 -m json.tool
 
-# 4. fetch the result later
+# 4. poll for the result -- the `worker` service processes it asynchronously
 curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result | python3 -m json.tool
 ```
 

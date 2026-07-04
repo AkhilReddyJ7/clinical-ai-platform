@@ -228,6 +228,55 @@ async def test_worker_loop_reclaims_a_stale_job_and_emits_the_event(
 
 
 @pytest.mark.asyncio
+async def test_worker_loop_finalizes_the_document_when_a_stale_reclaim_exhausts_the_budget(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    collected_events: list[Event],
+) -> None:
+    """Regression check: repository.reclaim_stale_job deliberately never
+    touches the document (it stays a pure job-table write, per
+    repository.py's documented boundary) -- so when a stale reclaim
+    exhausts the retry budget and the job goes straight to FAILED,
+    nothing else would move the document out of `processing` unless
+    run_worker_loop's idle-poll branch calls
+    _finalize_document_as_failed itself. Reproduced directly before this
+    fix existed: the job reached FAILED while the document stayed
+    PROCESSING forever.
+    """
+    monkeypatch.setattr(get_settings(), "job_max_retry_attempts", 3)
+
+    async with session_factory() as setup_session:
+        document = await _make_document(setup_session)
+        job = await _make_stale_running_job(setup_session, document, retry_count=3)
+
+    monkeypatch.setattr(worker_module, "claim_next_job", _fake_claim_always_empty())
+
+    async def unreachable_process_job(claimed: Job) -> None:
+        raise AssertionError("process_job_fn must never run for a stale-only scenario")
+
+    task = await start_worker(
+        session_factory,
+        process_job_fn=unreachable_process_job,
+        poll_interval_seconds=POLL_INTERVAL,
+    )
+    await asyncio.sleep(POLL_INTERVAL * 5)
+    await stop_worker(task)
+
+    stale_events = [e for e in collected_events if e.event_type == EventType.JOB_STALE_SKIPPED]
+    assert len(stale_events) == 1
+    assert stale_events[0].metadata["outcome_status"] == "failed"
+
+    async with session_factory() as session:
+        stored_job = await session.get(Job, job.id)
+        assert stored_job is not None
+        assert stored_job.status == JobStatus.FAILED
+
+        stored_document = await session.get(Document, document.id)
+        assert stored_document is not None
+        assert stored_document.status == DocumentStatus.FAILED
+
+
+@pytest.mark.asyncio
 async def test_worker_loop_does_not_reclaim_when_nothing_is_stale(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,

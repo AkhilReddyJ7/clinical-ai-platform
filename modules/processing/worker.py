@@ -25,6 +25,7 @@ recorded.
 import asyncio
 import contextlib
 import time
+import uuid
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any, TypeAlias
@@ -33,12 +34,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from modules.extraction.anthropic_extractor import AnthropicFieldExtractionPipeline
 from modules.extraction.base import FieldExtractionPipeline
+from modules.ingestion import service as ingestion_service
+from modules.ingestion.models import DocumentStatus
 from modules.ingestion.storage import LocalFileStorage, StorageBackend
 from modules.ocr.base import ExtractionPipeline
 from modules.ocr.tesseract import TesseractExtractionPipeline
 from modules.processing.errors import is_retryable
 from modules.processing.events import Event, EventType, emit_event
-from modules.processing.models import Job
+from modules.processing.models import Job, JobStatus
 from modules.processing.observability.registry import register_default_subscribers
 from modules.processing.pipeline import ProcessingResult, run_processing_pipeline
 from modules.processing.repository import (
@@ -136,6 +139,37 @@ async def _dispatch(job: Job, process_job_fn: ProcessJobFn) -> None:
         await result
 
 
+async def _finalize_document_as_failed(
+    session_factory: async_sessionmaker[AsyncSession], document_id: uuid.UUID
+) -> None:
+    """Cascades a job's terminal `failed` outcome to its document (ADR-0020).
+
+    pipeline.py's own terminal-classified failure paths already move the
+    document to `failed` themselves (via _persist_failure) before raising
+    -- but two paths a job can reach `failed` through never go through
+    pipeline.py at all: ADR-0023's retry budget exhausting (decided here,
+    in run_worker_loop) and ADR-0024's stale-job reclaim exhausting
+    (decided in repository.reclaim_stale_job). Both leave a job correctly
+    `failed` but, without this, would leave its document stuck in
+    `processing`/`extracted` forever -- exactly the state ADR-0020 warns
+    a worker must not produce. Guarding on `processing`/`extracted` (the
+    only states `failed` is reachable from) makes this a harmless no-op
+    when pipeline.py already did it, and closes the gap when it didn't.
+    """
+    try:
+        async with session_factory() as session:
+            document = await ingestion_service.get_document(session, document_id)
+            if document is not None and document.status in (
+                DocumentStatus.PROCESSING,
+                DocumentStatus.EXTRACTED,
+            ):
+                await ingestion_service.update_status(session, document, DocumentStatus.FAILED)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("worker: error while finalizing document id=%s as failed", document_id)
+
+
 async def run_worker_loop(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -180,6 +214,8 @@ async def run_worker_loop(
                 logger.exception("worker: error while reclaiming stale jobs")
 
             if reclaimed is not None:
+                if reclaimed.status == JobStatus.FAILED:
+                    await _finalize_document_as_failed(session_factory, reclaimed.document_id)
                 emit_event(
                     Event(
                         event_type=EventType.JOB_STALE_SKIPPED,
@@ -206,6 +242,7 @@ async def run_worker_loop(
 
         outcome: Job | None
         duration: float
+        job_newly_failed = False
         try:
             await _dispatch(job, process_job_fn)
         except asyncio.CancelledError:
@@ -237,6 +274,7 @@ async def run_worker_loop(
                         )
                 else:
                     outcome = await mark_job_failed(session, job.id, str(exc))
+                    job_newly_failed = outcome is not None
                     if outcome is not None:
                         emit_event(
                             Event(
@@ -268,6 +306,15 @@ async def run_worker_loop(
             logger.warning(
                 "worker: outcome write skipped for job id=%s (no longer running)", job.id
             )
+
+        # A terminal failure decided here (budget exhausted, or any
+        # exception is_retryable() doesn't classify as transient) never
+        # runs through pipeline.py's own _persist_failure -- only this
+        # loop knows the job itself is done, so only it can cascade the
+        # document to `failed` for these specific paths (see
+        # _finalize_document_as_failed's docstring).
+        if job_newly_failed:
+            await _finalize_document_as_failed(session_factory, job.document_id)
 
 
 async def start_worker(

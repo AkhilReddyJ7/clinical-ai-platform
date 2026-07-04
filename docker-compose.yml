@@ -31,6 +31,39 @@ services:
       retries: 5
       start_period: 15s
 
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+
+    # Same image as api (no separate Dockerfile needed -- this process
+    # needs exactly the same dependencies: uv, tesseract, the app code),
+    # just a different command and no exposed port. Shares the same
+    # uploads_data volume as api: apps/worker/main.py's worker reads
+    # documents from the same on-disk storage api's /documents endpoint
+    # wrote them to (modules/processing/worker.py's own _storage()
+    # factory, built from the same Settings.storage_root).
+    volumes:
+      - .:/app
+      - uploads_data:/app/data/uploads
+
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-clinical_ai}
+      STORAGE_ROOT: /app/data/uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Runs its own `alembic upgrade head` (idempotent, safe alongside
+    # api's) rather than depending on api's own healthcheck -- keeps the
+    # two services independent, matching how this would scale to
+    # multiple worker replicas with no api dependency chain between them.
+    command: >
+      sh -c "uv run alembic upgrade head &&
+             uv run python -m apps.worker.main"
+
   postgres:
     image: postgres:16-alpine
 

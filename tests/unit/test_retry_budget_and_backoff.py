@@ -353,6 +353,17 @@ async def test_transient_failure_fails_the_job_once_budget_is_exhausted(
         assert stored.retry_count == 3  # unchanged: budget exhaustion consumes no new retry
         assert stored.last_error == "rate limited again"
 
+        # Regression check: budget exhaustion never runs through
+        # pipeline.py's own _persist_failure (that only fires for
+        # terminal-classified errors, not "ran out of retries"), so
+        # nothing else would move the document out of `processing` unless
+        # worker.py's _finalize_document_as_failed does it -- confirmed
+        # by reproducing the bug directly before this fix existed: the
+        # job reached FAILED while the document stayed PROCESSING forever.
+        stored_document = await session.get(Document, document.id)
+        assert stored_document is not None
+        assert stored_document.status == DocumentStatus.FAILED
+
 
 @pytest.mark.asyncio
 async def test_a_budget_of_zero_disallows_any_retry(

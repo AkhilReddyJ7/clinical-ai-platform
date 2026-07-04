@@ -3,26 +3,19 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.concurrency import run_in_threadpool
 
-from apps.api.dependencies import (
-    get_extraction_pipeline,
-    get_field_extraction_pipeline,
-    get_phi_validator,
-    get_storage,
-    get_validation_pipeline,
-)
-from apps.api.schemas import DocumentListOut, ProcessingResultOut
+from apps.api.dependencies import get_storage
+from apps.api.schemas import DocumentListOut, ProcessEnqueuedOut, ProcessingStatusOut
 from modules.auth.api_key import require_api_key
-from modules.extraction.base import FieldExtractionError, FieldExtractionPipeline
 from modules.ingestion import service as ingestion_service
 from modules.ingestion.models import DocumentStatus
 from modules.ingestion.schemas import DocumentOut
 from modules.ingestion.storage import StorageBackend
-from modules.ocr.base import ExtractionError, ExtractionOutput, ExtractionPipeline
 from modules.ocr.models import ExtractionResult
 from modules.ocr.schemas import ExtractionResultOut
-from modules.validation.base import ValidationPipeline
+from modules.processing.models import Job, JobStatus
+from modules.processing.repository import enqueue_job
+from modules.processing.state_machine import IllegalTransitionError
 from modules.validation.models import ValidationResult
 from modules.validation.schemas import ValidationResultOut
 from shared.config.settings import get_settings
@@ -33,6 +26,7 @@ settings = get_settings()
 router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(require_api_key)])
 
 ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "text/plain"}
+_ACTIVE_JOB_STATUSES = (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.RETRYING)
 
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MiB
 
@@ -109,228 +103,93 @@ async def get_document(document_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return DocumentOut.model_validate(document)
 
 
-@router.post("/{document_id}/process", response_model=ProcessingResultOut)
+@router.post(
+    "/{document_id}/process",
+    response_model=ProcessEnqueuedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def process_document(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    storage: StorageBackend = Depends(get_storage),
-    extraction_pipeline: ExtractionPipeline = Depends(get_extraction_pipeline),
-    field_extraction_pipeline: FieldExtractionPipeline = Depends(get_field_extraction_pipeline),
-    phi_validator: ValidationPipeline = Depends(get_phi_validator),
-    validation_pipeline: ValidationPipeline = Depends(get_validation_pipeline),
-) -> ProcessingResultOut:
-    document = await ingestion_service.get_document(db, document_id)
-    if document is None:
+) -> ProcessEnqueuedOut:
+    """Enqueues a processing job and returns immediately (ADR-0022) --
+    no longer runs the pipeline inline. modules/processing/worker.py's
+    background loop claims and runs the job; GET .../result reports
+    progress and, once terminal, the outcome.
+    """
+    try:
+        job = await enqueue_job(db, document_id)
+    except IllegalTransitionError:
+        # Document exists (enqueue_job's locked read confirmed that) but
+        # isn't in a legal starting state: either an active job already
+        # exists (document status == processing/extracted), or the
+        # document is already validated (ADR-0022's 409 case).
+        document = await ingestion_service.get_document(db, document_id)
+        reason = (
+            "document is already validated"
+            if document is not None and document.status == DocumentStatus.VALIDATED
+            else "document already has an active processing job"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{reason}; see GET /documents/{document_id}/result for current status",
+        ) from None
+
+    if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
 
-    await ingestion_service.update_status(db, document, DocumentStatus.PROCESSING)
-
-    # Both calls below can take real wall-clock time (a large file read, and
-    # especially OCR: rasterizing + recognizing every page of a PDF) and
-    # are synchronous — calling them directly here would block the entire
-    # event loop, stalling every other concurrent request (including
-    # unrelated /health checks) for as long as this one document takes.
-    # Confirmed directly: a 25-page PDF blocked a concurrent /health call
-    # for the full ~20s OCR took. run_in_threadpool moves the blocking work
-    # off the event loop thread.
-    data = await run_in_threadpool(storage.read, document.storage_key)
-    try:
-        extraction_output = await run_in_threadpool(
-            extraction_pipeline.extract, data=data, content_type=document.content_type
-        )
-    except ExtractionError as exc:
-        # The pipeline couldn't read the bytes at all (corrupted file,
-        # content-type/actual-content mismatch) — fail the document
-        # cleanly instead of leaving it stuck in PROCESSING behind an
-        # unhandled 500.
-        extraction = ExtractionResult(
-            document_id=document.id,
-            raw_text=f"[EXTRACTION FAILED: {exc}]",
-            fields={},
-            confidence=0.0,
-        )
-        db.add(extraction)
-        validation = ValidationResult(
-            document_id=document.id,
-            is_valid=False,
-            issues=[f"extraction failed: {exc}"],
-        )
-        db.add(validation)
-        await db.commit()
-        await db.refresh(extraction)
-        await db.refresh(validation)
-        document = await ingestion_service.update_status(db, document, DocumentStatus.FAILED)
-
-        logger.warning(
-            "document processing failed: extraction error id=%s error=%s", document.id, exc
-        )
-
-        return ProcessingResultOut(
-            document=DocumentOut.model_validate(document),
-            extraction=ExtractionResultOut.model_validate(extraction),
-            validation=ValidationResultOut.model_validate(validation),
-        )
-
-    # PHI-check the raw OCR text BEFORE calling the field-extraction LLM at
-    # all: sending PHI-shaped content to a third-party API is a bigger
-    # trust-boundary commitment than merely persisting it, so the gate has
-    # to run first, not after. This also skips the LLM call entirely (no
-    # cost, no external send) whenever it would have been discarded anyway.
-    # Bare PHIDetectionValidator (not the full composite): fields don't
-    # exist yet at this point, so RequiredFieldsValidator has nothing
-    # meaningful to check.
-    phi_precheck = phi_validator.validate(ExtractionOutput(raw_text=extraction_output.raw_text))
-
-    if not phi_precheck.is_valid:
-        extraction = ExtractionResult(
-            document_id=document.id,
-            raw_text=(
-                f"[REDACTED: PHI detected in {len(extraction_output.raw_text)} "
-                "characters of extracted text; not persisted]"
-            ),
-            fields={},
-            confidence=extraction_output.confidence,
-        )
-        db.add(extraction)
-        validation = ValidationResult(
-            document_id=document.id,
-            is_valid=False,
-            issues=phi_precheck.issues,
-        )
-        db.add(validation)
-        await db.commit()
-        await db.refresh(extraction)
-        await db.refresh(validation)
-        document = await ingestion_service.update_status(db, document, DocumentStatus.FAILED)
-
-        logger.warning(
-            "document processing refused: PHI detected id=%s issues=%s",
-            document.id,
-            phi_precheck.issues,
-        )
-
-        return ProcessingResultOut(
-            document=DocumentOut.model_validate(document),
-            extraction=ExtractionResultOut.model_validate(extraction),
-            validation=ValidationResultOut.model_validate(validation),
-        )
-
-    # raw_text is confirmed PHI-clean — safe to send to the field-extraction
-    # LLM and to persist regardless of what happens next.
-    try:
-        field_output = await run_in_threadpool(
-            field_extraction_pipeline.extract_fields, raw_text=extraction_output.raw_text
-        )
-    except FieldExtractionError as exc:
-        extraction = ExtractionResult(
-            document_id=document.id,
-            raw_text=extraction_output.raw_text,
-            fields={},
-            confidence=0.0,
-        )
-        db.add(extraction)
-        validation = ValidationResult(
-            document_id=document.id,
-            is_valid=False,
-            issues=[f"field extraction failed: {exc}"],
-        )
-        db.add(validation)
-        await db.commit()
-        await db.refresh(extraction)
-        await db.refresh(validation)
-        document = await ingestion_service.update_status(db, document, DocumentStatus.FAILED)
-
-        logger.warning(
-            "document processing failed: field extraction error id=%s error=%s",
-            document.id,
-            exc,
-        )
-
-        return ProcessingResultOut(
-            document=DocumentOut.model_validate(document),
-            extraction=ExtractionResultOut.model_validate(extraction),
-            validation=ValidationResultOut.model_validate(validation),
-        )
-
-    combined_output = ExtractionOutput(
-        raw_text=extraction_output.raw_text,
-        fields=field_output.fields,
-        # Simple average of the OCR stage's confidence and the field
-        # extraction stage's confidence — both are 0.0-1.0 measures of how
-        # much to trust this ExtractionResult, and there's only one
-        # confidence column to report it in.
-        confidence=(extraction_output.confidence + field_output.confidence) / 2,
-    )
-    # Now runs the full composite (RequiredFieldsValidator + PHI) against
-    # the real extracted fields. The PHI re-check is redundant (raw_text
-    # was already confirmed clean above) but harmless; RequiredFieldsValidator
-    # is now meaningful for the first time — the LLM can genuinely fail to
-    # find a field, unlike the old synthetic fields, which always populated
-    # all three.
-    validation_output = validation_pipeline.validate(combined_output)
-
-    extraction = ExtractionResult(
-        document_id=document.id,
-        raw_text=combined_output.raw_text,
-        fields=combined_output.fields,
-        confidence=combined_output.confidence,
-    )
-    db.add(extraction)
-    await ingestion_service.update_status(db, document, DocumentStatus.EXTRACTED)
-
-    validation = ValidationResult(
-        document_id=document.id,
-        is_valid=validation_output.is_valid,
-        issues=validation_output.issues,
-    )
-    db.add(validation)
-    await db.commit()
-    await db.refresh(extraction)
-    await db.refresh(validation)
-
-    final_status = DocumentStatus.VALIDATED if validation_output.is_valid else DocumentStatus.FAILED
-    document = await ingestion_service.update_status(db, document, final_status)
-
-    logger.info(
-        "document processed id=%s status=%s is_valid=%s",
-        document.id,
-        document.status,
-        validation_output.is_valid,
-    )
-
-    return ProcessingResultOut(
-        document=DocumentOut.model_validate(document),
-        extraction=ExtractionResultOut.model_validate(extraction),
-        validation=ValidationResultOut.model_validate(validation),
-    )
+    logger.info("job enqueued id=%s document_id=%s", job.id, document_id)
+    return ProcessEnqueuedOut(document_id=document_id, job_id=job.id, job_status=job.status)
 
 
-@router.get("/{document_id}/result", response_model=ProcessingResultOut)
+@router.get("/{document_id}/result", response_model=ProcessingStatusOut)
 async def get_processing_result(
     document_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> ProcessingResultOut:
+) -> ProcessingStatusOut:
+    """The canonical status/result endpoint (ADR-0022): the one place a
+    caller looks to answer both "what's the status" and "what's the
+    result". Exactly one outcome is non-200 (document not found) --
+    every other case, including "never submitted" and "processing
+    failed", is 200 with the document's current state discriminated in
+    the body.
+    """
     document = await ingestion_service.get_document(db, document_id)
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
 
-    extraction = await db.scalar(
-        select(ExtractionResult)
-        .where(ExtractionResult.document_id == document_id)
-        .order_by(ExtractionResult.created_at.desc())
-    )
-    validation = await db.scalar(
-        select(ValidationResult)
-        .where(ValidationResult.document_id == document_id)
-        .order_by(ValidationResult.created_at.desc())
-    )
-    if extraction is None or validation is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="document has not been processed yet",
+    # Document status is the authoritative signal (ADR-0020: it answers
+    # what's currently true from a caller's perspective) -- checked
+    # first, not the Job table, because a job's own status can lag the
+    # document's by one write: run_processing_pipeline moves the document
+    # to its terminal status as its last step, but the job itself is only
+    # marked `completed` in a *separate*, later transaction (worker.py,
+    # after process_job_fn returns) -- see
+    # test_document_reaches_terminal_status_before_the_job_does. Deciding
+    # from the Job table first would occasionally report "processing" for
+    # a document that's already validated/failed.
+    if document.status in (DocumentStatus.VALIDATED, DocumentStatus.FAILED):
+        extraction = await db.scalar(
+            select(ExtractionResult)
+            .where(ExtractionResult.document_id == document_id)
+            .order_by(ExtractionResult.created_at.desc())
+        )
+        validation = await db.scalar(
+            select(ValidationResult)
+            .where(ValidationResult.document_id == document_id)
+            .order_by(ValidationResult.created_at.desc())
+        )
+        return ProcessingStatusOut(
+            document=DocumentOut.model_validate(document),
+            extraction=ExtractionResultOut.model_validate(extraction) if extraction else None,
+            validation=ValidationResultOut.model_validate(validation) if validation else None,
         )
 
-    return ProcessingResultOut(
+    active_job = await db.scalar(
+        select(Job)
+        .where(Job.document_id == document_id, Job.status.in_(_ACTIVE_JOB_STATUSES))
+        .order_by(Job.created_at.desc())
+    )
+    return ProcessingStatusOut(
         document=DocumentOut.model_validate(document),
-        extraction=ExtractionResultOut.model_validate(extraction),
-        validation=ValidationResultOut.model_validate(validation),
+        job_status=active_job.status if active_job is not None else None,
     )

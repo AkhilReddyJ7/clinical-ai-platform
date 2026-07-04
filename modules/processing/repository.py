@@ -23,6 +23,13 @@ a `running` job nothing has touched recently and routes it through
 functions above, this one *does* decide which to call — staleness isn't
 an execution-reported outcome, there's no caller-side classification to
 defer to).
+
+``enqueue_job`` is the way *in*, symmetric with claiming as the way out:
+it creates a job and moves the document to `processing` atomically (a
+locked read of the document row, per ADR-0022), closing the same
+concurrent-double-submission race claim_next_job's SKIP LOCKED closes on
+the claim side — two callers racing to enqueue against the same document
+must not both succeed.
 """
 
 import random
@@ -34,8 +41,9 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from modules.ingestion.models import Document, DocumentStatus
 from modules.processing.models import Job, JobStatus
-from modules.processing.state_machine import validate_job_transition
+from modules.processing.state_machine import validate_document_transition, validate_job_transition
 from shared.config.settings import Settings, get_settings
 
 
@@ -229,3 +237,40 @@ async def reclaim_stale_job(db: AsyncSession) -> Job | None:
     return await mark_job_failed(
         db, job.id, "stale job: exceeded job_stale_timeout_seconds without completing"
     )
+
+
+async def enqueue_job(db: AsyncSession, document_id: uuid.UUID) -> Job | None:
+    """Create a new job for a document and move it to `processing`
+    (ADR-0020, ADR-0022's `POST /process`).
+
+    Returns None if the document doesn't exist -- the caller (the
+    /process route) maps that to 404. Raises IllegalTransitionError
+    (state_machine.py) if the document exists but isn't currently in a
+    legal starting state (`uploaded` or `failed`) -- the caller maps that
+    to 409. A document with an active job is always `processing` by
+    construction once this function is the only path that ever creates a
+    job (ADR-0020's "at most one non-terminal job per document"), so the
+    document-status check alone is sufficient; no separate Job-table
+    query is needed here.
+
+    Locks the document row (SELECT ... FOR UPDATE) for the duration of
+    the check-and-create, closing the same race claim_next_job's SKIP
+    LOCKED closes on the claim side: two concurrent POST /process calls
+    for the same document must not both succeed. Unlike claim_next_job,
+    this does not skip locked rows -- a second caller should wait for the
+    first's transaction to finish and then see its updated status, not
+    silently miss a document that's mid-check.
+    """
+    stmt = select(Document).where(Document.id == document_id).with_for_update()
+    document = (await db.execute(stmt)).scalar_one_or_none()
+    if document is None:
+        return None
+
+    validate_document_transition(document.status, DocumentStatus.PROCESSING)
+
+    job = Job(document_id=document.id, status=JobStatus.QUEUED)
+    db.add(job)
+    document.status = DocumentStatus.PROCESSING
+    await db.commit()
+    await db.refresh(job)
+    return job
