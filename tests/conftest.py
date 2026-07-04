@@ -25,6 +25,7 @@ from modules.ingestion import models as ingestion_models  # noqa: F401  (registe
 from modules.ingestion.storage import LocalFileStorage
 from modules.ocr import models as ocr_models  # noqa: F401  (registers ORM table)
 from modules.ocr.mock import MockExtractionPipeline
+from modules.processing import models as processing_models  # noqa: F401  (registers ORM table)
 from modules.validation import models as validation_models  # noqa: F401  (registers ORM table)
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
