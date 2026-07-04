@@ -7,9 +7,11 @@ mark_job_* repository functions (Increment 4): completed on success,
 retrying or failed on an exception, per the classification process_job
 signals (modules/processing/errors.py) and ADR-0023's already-defined
 transient/terminal split. This module does not decide *how* a job should
-be classified beyond dispatching on that signal, and it does not
-implement retry scheduling (backoff timing, budget limits) — only the
-state update for whichever outcome already occurred.
+be classified beyond dispatching on that signal. It does enforce
+ADR-0023's retry budget (a transient failure past job_max_retry_attempts
+is failed, not retried) before calling mark_job_retry; backoff timing
+itself (computing next_attempt_at, and reclaiming a retrying job once it
+elapses) lives in repository.py, not here.
 
 Safe to run as multiple concurrent instances (processes, containers, or
 asyncio tasks): claim_next_job's SKIP LOCKED semantics guarantee no two
@@ -180,7 +182,8 @@ async def run_worker_loop(
             logger.exception("worker: error while processing job id=%s", job.id)
             duration = time.monotonic() - claim_started_at
             async with session_factory() as session:
-                if is_retryable(exc):
+                budget_remains = job.retry_count < get_settings().job_max_retry_attempts
+                if is_retryable(exc) and budget_remains:
                     outcome = await mark_job_retry(session, job.id)
                     # Events mirror state transitions, they don't define
                     # them (Increment 12): outcome is None precisely when

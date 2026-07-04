@@ -48,7 +48,12 @@ def collected_events() -> Iterator[list[Event]]:
 
 
 def _fake_job() -> Job:
-    return Job(id=uuid.uuid4(), document_id=uuid.uuid4(), status=JobStatus.RUNNING)
+    # retry_count is set explicitly: Job.retry_count's `default=0` is a
+    # server/flush-time default, not a Python-construction-time one, so an
+    # unpersisted Job() would otherwise leave retry_count as None here --
+    # unlike a real claimed job, which is always refreshed from the DB
+    # (see claim_next_job) and so always has a concrete int.
+    return Job(id=uuid.uuid4(), document_id=uuid.uuid4(), status=JobStatus.RUNNING, retry_count=0)
 
 
 def _fake_claim_once(

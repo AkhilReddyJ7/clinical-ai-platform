@@ -72,6 +72,7 @@ async def test_mark_job_retry_transitions_running_to_retrying_and_increments_cou
         assert result is not None
         assert result.status == JobStatus.RETRYING
         assert result.retry_count == 1
+        assert result.next_attempt_at is not None  # ADR-0023 backoff scheduling
 
         # Simulate the worker reclaiming it for a second attempt.
         result.status = JobStatus.RUNNING

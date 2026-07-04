@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     # not a validation failure (see modules/processing/pipeline.py).
     low_confidence_threshold: float = 0.5
 
+    # ADR-0023 retry budget and backoff. A job attempt classified transient
+    # may retry up to this many additional times before the job is failed
+    # outright; the delay between attempts grows exponentially (with
+    # jitter), capped, per ADR-0023 section 3. Tunable defaults, not fixed
+    # architectural constants, same posture as the OCR/Anthropic knobs above.
+    job_max_retry_attempts: int = 3
+    job_retry_backoff_initial_seconds: float = 2.0
+    job_retry_backoff_multiplier: float = 2.0
+    job_retry_backoff_max_seconds: float = 60.0
+    job_retry_backoff_jitter_seconds: float = 1.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

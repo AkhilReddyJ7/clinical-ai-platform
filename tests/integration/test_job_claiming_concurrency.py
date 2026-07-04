@@ -15,6 +15,7 @@ breaks the fast, infrastructure-free CI `test` job.
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -89,6 +90,79 @@ async def test_concurrent_claims_never_double_claim_the_same_job(
                 job = await verify_session.get(Job, job_id)
                 assert job is not None
                 assert job.status == JobStatus.RUNNING
+    finally:
+        async with session_factory() as cleanup_session:
+            for job_id in job_ids:
+                job = await cleanup_session.get(Job, job_id)
+                if job is not None:
+                    await cleanup_session.delete(job)
+            doc = await cleanup_session.get(Document, document.id)
+            if doc is not None:
+                await cleanup_session.delete(doc)
+            await cleanup_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reclaims_never_double_claim_the_same_retrying_job(
+    pg_engine: AsyncEngine,
+) -> None:
+    """Same SKIP LOCKED guarantee, exercised against
+    _claim_ready_retrying_job (ADR-0023's backoff-driven reclaim) instead
+    of the ordinary queued-job claim above — a second, independent query
+    added by this increment, not covered by reusing the QUEUED test.
+    """
+    session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    job_count = 5
+    claimant_count = 10
+    ready_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    async with session_factory() as setup_session:
+        document = Document(
+            id=uuid.uuid4(),
+            filename="report.txt",
+            content_type="text/plain",
+            size_bytes=3,
+            storage_key=f"{uuid.uuid4()}/report.txt",
+            status=DocumentStatus.PROCESSING,
+        )
+        setup_session.add(document)
+        await setup_session.commit()
+
+        jobs = [
+            Job(
+                document_id=document.id,
+                status=JobStatus.RETRYING,
+                retry_count=1,
+                next_attempt_at=ready_at,
+            )
+            for _ in range(job_count)
+        ]
+        setup_session.add_all(jobs)
+        await setup_session.commit()
+        job_ids = {job.id for job in jobs}
+
+    try:
+
+        async def _claim_with_own_session() -> uuid.UUID | None:
+            async with session_factory() as session:
+                claimed = await claim_next_job(session)
+                return claimed.id if claimed is not None else None
+
+        results = await asyncio.gather(*(_claim_with_own_session() for _ in range(claimant_count)))
+
+        claimed_ids = [job_id for job_id in results if job_id is not None]
+        empty_results = [job_id for job_id in results if job_id is None]
+
+        assert len(claimed_ids) == job_count
+        assert set(claimed_ids) == job_ids
+        assert len(empty_results) == claimant_count - job_count
+
+        async with session_factory() as verify_session:
+            for job_id in job_ids:
+                job = await verify_session.get(Job, job_id)
+                assert job is not None
+                assert job.status == JobStatus.RUNNING
+                assert job.next_attempt_at is None
     finally:
         async with session_factory() as cleanup_session:
             for job_id in job_ids:

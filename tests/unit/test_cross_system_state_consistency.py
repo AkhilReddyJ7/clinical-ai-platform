@@ -430,15 +430,19 @@ async def test_transient_failure_then_retry_then_eventual_success(
     monkeypatch: pytest.MonkeyPatch,
     collected_events: list[Event],
 ) -> None:
-    """Simulates the full retry lifecycle ADR-0023 describes. The actual
-    backoff-driven reclaim (RETRYING -> RUNNING) has no implementation yet
-    (claim_next_job only claims QUEUED jobs — confirmed by reading
-    repository.py; ADR-0023's "worker picks the job back up" is not yet
-    built, consistent with Increment 4's explicit deferral). This test
-    manually performs that one legal transition (already valid per
-    ADR-0020's state machine) to simulate what the eventual reclaim loop
-    will do, so the *rest* of the lifecycle — second attempt, success,
-    final state+event consistency — can be verified now.
+    """Simulates the full retry lifecycle ADR-0023 describes.
+
+    claim_next_job now does implement the backoff-driven reclaim
+    (RETRYING -> RUNNING once next_attempt_at elapses; see
+    repository.py's _claim_ready_retrying_job and
+    test_retry_budget_and_backoff.py, which exercises that real claim
+    path directly). This test still uses _fake_claim_once for the second
+    worker phase, same as every other test in this file — its purpose is
+    the cross-system state+event consistency of a multi-attempt job
+    lifecycle, not claim_next_job's own reclaim query, so it manually
+    performs the RETRYING -> RUNNING transition (a legal edge per
+    ADR-0020) to reach that lifecycle point deterministically, rather
+    than depending on real wall-clock backoff timing.
     """
     storage = LocalFileStorage(tmp_path / "uploads")
     job = await _make_document_and_job(session_factory, storage)

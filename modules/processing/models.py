@@ -55,3 +55,9 @@ class Job(Base):
     # not a full attempt history — that's the audit trail's job, per
     # ADR-0023 section 6, not this column's.
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Set when a job enters `retrying`: the earliest time the backoff-driven
+    # reclaim (ADR-0023 section 3) may pick this job back up as `running`.
+    # None otherwise (queued/running/terminal jobs have no pending attempt).
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
