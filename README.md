@@ -130,8 +130,17 @@ probe rather than always reporting healthy.
 Every `/documents*` endpoint requires an `X-API-Key` header; `/` and
 `/health` do not (so orchestrator/monitoring probes don't need a
 credential). The local dev default is `local-dev-key` (see `.env.example`);
-override `API_KEYS` (comma-separated for multiple valid keys) via `.env` for
-anything beyond local dev, and never commit real keys.
+override `API_KEYS` via `.env` for anything beyond local dev, and never
+commit real keys.
+
+As of ADR-0026, each configured key has a **name**: `API_KEYS` is
+`label:key` pairs, comma-separated (`API_KEYS=alice:sk-...,bob:sk-...`) —
+a breaking change from the earlier bare-key-list format. Every valid key
+still has identical access (no per-key scoping/permissions — see
+[Status & constraints](#status--constraints)); the label is resolved
+per-request and available to route handlers and structured logs as
+`caller`, so "who called this" is answerable today even though nothing
+persists it yet (that's the audit trail, still future work).
 
 ```bash
 curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents
@@ -146,11 +155,11 @@ body before being rejected. Measured directly: before this, an
 unauthenticated 100MB upload took ~260ms to reject (the body was already
 fully received); after, ~10ms. See `docs/adr/0017-...`.
 
-This is deliberately a single shared static key, not per-user identity —
-enough to gate these endpoints before Sprint 2 adds anything that costs
-money per call (real OCR, LLM extraction) or exposes more data (RAG/search).
-Per-user auth, sessions, and audit trails are future work
-(`modules/auth/`, `modules/audit/`).
+This is deliberately named keys, not full accounts/sessions/OAuth (ADR-0026
+bounds the scope explicitly) — every key still has identical access, and
+there's no UI or multi-tenant requirement to justify more. Persisting who
+did what (an audit trail keyed on the resolved caller label) is future
+work (`modules/audit/`, not started).
 
 ## Local development without Docker
 
@@ -447,10 +456,12 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   image growth depending on model choice, and accuracy that wasn't a
   clean win (missed an SSN this project's own regex catches reliably) —
   and **not adopted**. See `docs/adr/0015-...` and `docs/adr/0018-...`.
-- **Auth is a shared static key, not identity.** `X-API-Key` gates
-  `/documents*` but there's no concept of a user, session, or per-caller
-  audit trail yet — anyone with the key has full access. Real identity,
-  scoped permissions, and audit logging are future work (`modules/audit`).
+- **Auth is named keys, not scoped identity.** `X-API-Key` gates
+  `/documents*`, and each configured key now resolves to a name (ADR-0026)
+  — but every named key still has identical access, and nothing persists
+  who did what yet. Scoped permissions, sessions/OAuth, and an audit trail
+  are future work (`modules/audit`, not started; both explicitly out of
+  this ADR's bounded scope).
 - **Field extraction is real, single-provider (Anthropic), and requires a
   key you supply.** `AnthropicFieldExtractionPipeline` uses a forced tool
   call against the Anthropic API — no provider-agnostic tree was built in

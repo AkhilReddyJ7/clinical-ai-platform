@@ -21,10 +21,12 @@ class Settings(BaseSettings):
     # clinical documents are rarely more than a few dozen pages.
     max_pdf_pages: int = 50
 
-    # Comma-separated list of valid X-API-Key values. Local/dev-only default
-    # below — generate real keys and set them via .env (gitignored) for
-    # anything beyond a local docker compose run; never commit real keys.
-    api_keys: str = "local-dev-key"
+    # Comma-separated `label:key` pairs (ADR-0026) -- each valid X-API-Key
+    # value is now named, not an interchangeable shared secret. Local/dev-
+    # only default below — generate real keys and set them via .env
+    # (gitignored) for anything beyond a local docker compose run; never
+    # commit real keys.
+    api_keys: str = "local-dev:local-dev-key"
 
     # Empty by default: fails closed (AnthropicFieldExtractionPipeline
     # refuses to construct without a real key) rather than silently calling

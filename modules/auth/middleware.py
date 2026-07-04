@@ -3,7 +3,7 @@ import json
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from modules.auth.api_key import API_KEY_HEADER_NAME, _matches_any, get_valid_api_keys
+from modules.auth.api_key import API_KEY_HEADER_NAME, _resolve_caller, get_valid_api_keys
 
 
 class ApiKeyGateMiddleware:
@@ -26,6 +26,12 @@ class ApiKeyGateMiddleware:
     routing/dependency layer runs at all. `require_api_key` stays in place
     too — it's what makes the requirement show up in the OpenAPI schema,
     and is a harmless redundant check for requests that do reach it.
+
+    ADR-0026: also resolves the presented key to its configured label and
+    stashes it on `scope["state"]["caller"]` (readable downstream as
+    `Request.state.caller`), the same resolution rule `require_api_key`
+    applies -- kept here too so a route can read the caller from either
+    enforcement point without a second lookup.
     """
 
     def __init__(self, app: ASGIApp, protected_prefix: str) -> None:
@@ -44,10 +50,12 @@ class ApiKeyGateMiddleware:
         if not valid_keys:
             await _send_json(send, 503, {"detail": "API key auth is not configured"})
             return
-        if not api_key or not _matches_any(api_key, valid_keys):
+        caller = _resolve_caller(api_key, valid_keys) if api_key else None
+        if caller is None:
             await _send_json(send, 401, {"detail": "invalid or missing API key"})
             return
 
+        scope.setdefault("state", {})["caller"] = caller
         await self.app(scope, receive, send)
 
 

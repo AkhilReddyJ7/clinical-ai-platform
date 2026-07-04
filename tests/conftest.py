@@ -41,6 +41,7 @@ from shared.database.base import Base
 from shared.database.session import get_db
 
 TEST_API_KEY = "test-api-key"
+TEST_API_KEY_LABEL = "test-caller"
 PROCESS_JOB_POLL_INTERVAL = 0.01
 
 
@@ -99,7 +100,7 @@ def client(
     # app.dependency_overrides entirely by design (it runs before FastAPI's
     # routing/DI layer even starts) — this is the one thing both it and the
     # require_api_key route dependency actually share.
-    monkeypatch.setattr(get_settings(), "api_keys", TEST_API_KEY)
+    monkeypatch.setattr(get_settings(), "api_keys", f"{TEST_API_KEY_LABEL}:{TEST_API_KEY}")
 
     # No `with` block: skips the app's lifespan (which targets the real
     # Postgres engine) so tests don't require a running database.

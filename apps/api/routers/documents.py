@@ -58,6 +58,7 @@ async def upload_document(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     storage: StorageBackend = Depends(get_storage),
+    caller: str = Depends(require_api_key),
 ) -> DocumentOut:
     if file.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
@@ -76,7 +77,9 @@ async def upload_document(
         content_type=file.content_type,
         data=data,
     )
-    logger.info("document uploaded id=%s filename=%s", document.id, document.filename)
+    logger.info(
+        "document uploaded id=%s filename=%s caller=%s", document.id, document.filename, caller
+    )
     return DocumentOut.model_validate(document)
 
 
@@ -111,6 +114,7 @@ async def get_document(document_id: uuid.UUID, db: AsyncSession = Depends(get_db
 async def process_document(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    caller: str = Depends(require_api_key),
 ) -> ProcessEnqueuedOut:
     """Enqueues a processing job and returns immediately (ADR-0022) --
     no longer runs the pipeline inline. modules/processing/worker.py's
@@ -138,7 +142,7 @@ async def process_document(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
 
-    logger.info("job enqueued id=%s document_id=%s", job.id, document_id)
+    logger.info("job enqueued id=%s document_id=%s caller=%s", job.id, document_id, caller)
     return ProcessEnqueuedOut(document_id=document_id, job_id=job.id, job_status=job.status)
 
 
