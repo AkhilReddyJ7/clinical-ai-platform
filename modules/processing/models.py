@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.database.base import Base
@@ -31,6 +31,11 @@ class Job(Base):
     """
 
     __tablename__ = "jobs"
+    __table_args__ = (
+        # Supports the claim query's `WHERE status = 'queued' ORDER BY
+        # created_at` without a full table scan as the queue grows.
+        Index("ix_jobs_status_created_at", "status", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
@@ -42,3 +47,11 @@ class Job(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+    # Consumed by both an ordinary transient-failure retry and a stale-job
+    # reclaim (ADR-0023, ADR-0024) — a count of attempts, not a record of
+    # why each one happened.
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # The most recent terminal failure's message. Last-known-error only,
+    # not a full attempt history — that's the audit trail's job, per
+    # ADR-0023 section 6, not this column's.
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
