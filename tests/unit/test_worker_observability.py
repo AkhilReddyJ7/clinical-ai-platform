@@ -1,3 +1,13 @@
+"""Regression note (Increment 12): every job constructed here is
+persisted to the test DB, not a bare in-memory Job(id=uuid.uuid4(), ...).
+Before Increment 12's fix, emit_event(JOB_COMPLETED/RETRYING/FAILED) fired
+unconditionally regardless of whether mark_job_*'s conditional UPDATE
+actually matched a row — so a non-persisted job (which can never match)
+still produced an event, silently masking the bug. A persisted job is
+what makes these tests actually prove the event fired *because* the DB
+transition happened, not despite it not happening.
+"""
+
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
@@ -6,6 +16,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import modules.processing.worker as worker_module
+from modules.ingestion.models import Document, DocumentStatus
 from modules.processing.errors import TerminalProcessingError, TransientProcessingError
 from modules.processing.events import Event, EventType, subscribe, unsubscribe
 from modules.processing.metrics import metrics
@@ -28,8 +39,24 @@ def collected_events() -> Iterator[list[Event]]:
     unsubscribe(events.append)
 
 
-def _fake_job() -> Job:
-    return Job(id=uuid.uuid4(), document_id=uuid.uuid4(), status=JobStatus.RUNNING)
+async def _make_persisted_job(session_factory: async_sessionmaker[AsyncSession]) -> Job:
+    async with session_factory() as session:
+        document = Document(
+            id=uuid.uuid4(),
+            filename="note.txt",
+            content_type="text/plain",
+            size_bytes=10,
+            storage_key=f"{uuid.uuid4()}/note.txt",
+            status=DocumentStatus.PROCESSING,
+        )
+        session.add(document)
+        await session.commit()
+
+        job = Job(document_id=document.id, status=JobStatus.RUNNING)
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        return job
 
 
 def _fake_claim_once(
@@ -53,7 +80,7 @@ async def test_job_claim_emits_event_and_is_counted(
     monkeypatch: pytest.MonkeyPatch,
     collected_events: list[Event],
 ) -> None:
-    job = _fake_job()
+    job = await _make_persisted_job(session_factory)
     drained = asyncio.Event()
     monkeypatch.setattr(worker_module, "claim_next_job", _fake_claim_once(job, drained))
 
@@ -80,7 +107,7 @@ async def test_successful_completion_emits_event_and_is_counted(
     monkeypatch: pytest.MonkeyPatch,
     collected_events: list[Event],
 ) -> None:
-    job = _fake_job()
+    job = await _make_persisted_job(session_factory)
     drained = asyncio.Event()
     monkeypatch.setattr(worker_module, "claim_next_job", _fake_claim_once(job, drained))
 
@@ -99,6 +126,11 @@ async def test_successful_completion_emits_event_and_is_counted(
     assert metrics.completions == 1
     assert metrics.stage_summary("job_total") is not None
 
+    async with session_factory() as session:
+        stored = await session.get(Job, job.id)
+        assert stored is not None
+        assert stored.status == JobStatus.COMPLETED
+
 
 @pytest.mark.asyncio
 async def test_transient_failure_emits_retrying_event_and_is_counted(
@@ -106,7 +138,7 @@ async def test_transient_failure_emits_retrying_event_and_is_counted(
     monkeypatch: pytest.MonkeyPatch,
     collected_events: list[Event],
 ) -> None:
-    job = _fake_job()
+    job = await _make_persisted_job(session_factory)
     drained = asyncio.Event()
     monkeypatch.setattr(worker_module, "claim_next_job", _fake_claim_once(job, drained))
 
@@ -127,6 +159,11 @@ async def test_transient_failure_emits_retrying_event_and_is_counted(
     assert metrics.retries == 1
     assert metrics.terminal_failures == 0
 
+    async with session_factory() as session:
+        stored = await session.get(Job, job.id)
+        assert stored is not None
+        assert stored.status == JobStatus.RETRYING
+
 
 @pytest.mark.asyncio
 async def test_terminal_failure_emits_failed_event_and_is_counted(
@@ -134,7 +171,7 @@ async def test_terminal_failure_emits_failed_event_and_is_counted(
     monkeypatch: pytest.MonkeyPatch,
     collected_events: list[Event],
 ) -> None:
-    job = _fake_job()
+    job = await _make_persisted_job(session_factory)
     drained = asyncio.Event()
     monkeypatch.setattr(worker_module, "claim_next_job", _fake_claim_once(job, drained))
 
@@ -153,13 +190,22 @@ async def test_terminal_failure_emits_failed_event_and_is_counted(
     assert metrics.terminal_failures == 1
     assert metrics.retries == 0
 
+    async with session_factory() as session:
+        stored = await session.get(Job, job.id)
+        assert stored is not None
+        assert stored.status == JobStatus.FAILED
+
 
 @pytest.mark.asyncio
 async def test_metrics_accumulate_across_multiple_jobs(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    jobs = [_fake_job(), _fake_job(), _fake_job()]
+    jobs = [
+        await _make_persisted_job(session_factory),
+        await _make_persisted_job(session_factory),
+        await _make_persisted_job(session_factory),
+    ]
     remaining = list(jobs)
     all_claimed = asyncio.Event()
 

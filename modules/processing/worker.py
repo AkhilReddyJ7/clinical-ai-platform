@@ -182,44 +182,52 @@ async def run_worker_loop(
             async with session_factory() as session:
                 if is_retryable(exc):
                     outcome = await mark_job_retry(session, job.id)
-                    emit_event(
-                        Event(
-                            event_type=EventType.JOB_RETRYING,
-                            job_id=str(job.id),
-                            document_id=str(job.document_id),
-                            metadata={
-                                "duration_ms": duration * 1000,
-                                "error_type": type(exc).__name__,
-                                "error": str(exc),
-                            },
+                    # Events mirror state transitions, they don't define
+                    # them (Increment 12): outcome is None precisely when
+                    # the conditional UPDATE (ADR-0024's fencing) affected
+                    # zero rows — no DB transition actually happened, so
+                    # no event may claim one did.
+                    if outcome is not None:
+                        emit_event(
+                            Event(
+                                event_type=EventType.JOB_RETRYING,
+                                job_id=str(job.id),
+                                document_id=str(job.document_id),
+                                metadata={
+                                    "duration_ms": duration * 1000,
+                                    "error_type": type(exc).__name__,
+                                    "error": str(exc),
+                                },
+                            )
                         )
-                    )
                 else:
                     outcome = await mark_job_failed(session, job.id, str(exc))
-                    emit_event(
-                        Event(
-                            event_type=EventType.JOB_FAILED,
-                            job_id=str(job.id),
-                            document_id=str(job.document_id),
-                            metadata={
-                                "duration_ms": duration * 1000,
-                                "error_type": type(exc).__name__,
-                                "error": str(exc),
-                            },
+                    if outcome is not None:
+                        emit_event(
+                            Event(
+                                event_type=EventType.JOB_FAILED,
+                                job_id=str(job.id),
+                                document_id=str(job.document_id),
+                                metadata={
+                                    "duration_ms": duration * 1000,
+                                    "error_type": type(exc).__name__,
+                                    "error": str(exc),
+                                },
+                            )
                         )
-                    )
         else:
             duration = time.monotonic() - claim_started_at
             async with session_factory() as session:
                 outcome = await mark_job_completed(session, job.id)
-            emit_event(
-                Event(
-                    event_type=EventType.JOB_COMPLETED,
-                    job_id=str(job.id),
-                    document_id=str(job.document_id),
-                    metadata={"duration_ms": duration * 1000},
+            if outcome is not None:
+                emit_event(
+                    Event(
+                        event_type=EventType.JOB_COMPLETED,
+                        job_id=str(job.id),
+                        document_id=str(job.document_id),
+                        metadata={"duration_ms": duration * 1000},
+                    )
                 )
-            )
 
         if outcome is None:
             logger.warning(
