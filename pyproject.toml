@@ -36,14 +36,14 @@ pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py312"
 
 [tool.black]
 line-length = 100
 target-version = ["py312"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 strict = true
 explicit_package_bases = true
 
