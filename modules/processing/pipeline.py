@@ -11,18 +11,31 @@ mechanics (ADR-0021/0023/0024), which live entirely in repository.py and
 worker.py and are untouched here.
 
 Failure classification follows ADR-0023 exactly:
-- An OCR ExtractionError is always terminal (a property of the input
-  bytes, not of network conditions).
+- An OCR ExtractionError (or a ValueError from an unrecognized content
+  type — the same "property of the input, not of network conditions"
+  case, just a different exception type) is always terminal.
 - The PHI gate correctly halting the call, and RequiredFieldsValidator
   correctly reporting a missing field, are both *not failures* — the job
   completes; only the document's outcome is `failed`.
 - A FieldExtractionError is classified by inspecting the chained
   `__cause__` the Anthropic SDK call raised it from (RateLimitError /
-  APIConnectionError / a 5xx APIStatusError -> transient; anything else,
-  including a missing API key or a malformed response -> terminal) —
-  without touching modules/extraction/anthropic_extractor.py itself.
+  APIConnectionError [including its APITimeoutError subclass] / a 5xx
+  APIStatusError -> transient; anything else, including a missing API key
+  or a malformed response -> terminal) — without touching
+  modules/extraction/anthropic_extractor.py itself.
+
+Increment 6 adds quality signals on top of this, all read-only summaries
+that never influence the classification above or the document/job state
+transitions: a geometric-mean document confidence (penalizes a single
+weak stage instead of averaging it away), a per-field plausibility-
+weighted confidence, and an issue-category summary
+(missing_required_fields / invalid_data / uncertain_extraction) derived
+from the *existing* validator issue text — no new validators, no new
+issue strings, no change to `is_valid`.
 """
 
+import math
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +53,7 @@ from modules.processing.errors import TerminalProcessingError, TransientProcessi
 from modules.processing.models import Job
 from modules.validation.base import ValidationPipeline
 from modules.validation.models import ValidationResult
+from shared.config.settings import get_settings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -67,6 +81,11 @@ class ProcessingResult:
     issues: list[str]
     completed_at: datetime = field(default_factory=_utcnow)
     metadata: dict[str, str] = field(default_factory=dict)
+    # Per-field confidence (Increment 6) — a plausibility-weighted view of
+    # the same scalar field-extraction confidence, not a second score the
+    # LLM itself produced (neither pipeline stage returns real per-field
+    # scores today). Empty whenever `fields` is empty.
+    field_confidence: dict[str, float] = field(default_factory=dict)
 
 
 def _is_transient_field_extraction_error(exc: FieldExtractionError) -> bool:
@@ -75,10 +94,108 @@ def _is_transient_field_extraction_error(exc: FieldExtractionError) -> bool:
     if isinstance(cause, anthropic.RateLimitError):
         return True
     if isinstance(cause, anthropic.APIConnectionError):
+        # Covers anthropic.APITimeoutError too (a subclass), so a timed-out
+        # call is treated the same as any other connection failure.
         return True
     if isinstance(cause, anthropic.APIStatusError):
         return cause.status_code >= 500
     return False
+
+
+def _aggregate_confidence(ocr_confidence: float, field_confidence: float) -> float:
+    """Document-level confidence: geometric mean, not arithmetic mean.
+
+    An arithmetic mean of (0.95, 0.05) is 0.5 — reads as "medium
+    confidence" when what actually happened is one stage worked and the
+    other essentially failed. The geometric mean of the same pair is
+    ~0.22: it correctly lets a single very-weak stage drag the whole
+    result down instead of being masked by a strong one. Clamped to
+    non-negative inputs defensively; neither stage's confidence is
+    expected to be negative, but a geometric mean of a negative number
+    isn't a meaningful confidence value.
+    """
+    return math.sqrt(max(ocr_confidence, 0.0) * max(field_confidence, 0.0))
+
+
+# Loose, deliberately permissive shape checks — these flag a field as
+# *plausible-looking*, not as validated data (that's what a real schema/
+# format validator would do, which is out of scope here). A poor match
+# lowers that field's confidence; it never removes the field or affects
+# is_valid.
+_DATE_LIKE = re.compile(
+    r"\d{1,4}[-/.\s]\d{1,2}[-/.\s]\d{1,4}|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}"
+)
+_NAME_LIKE = re.compile(r"^[A-Za-z][A-Za-z'-]*(\s+[A-Za-z][A-Za-z'-]*)+$")
+_MIN_PLAUSIBLE_MRN_LENGTH = 3
+
+
+def _field_plausibility(field_name: str, value: str) -> float:
+    stripped = value.strip()
+    if not stripped:
+        return 0.0
+    if field_name == "date_of_birth":
+        return 1.0 if _DATE_LIKE.search(stripped) else 0.5
+    if field_name == "patient_name":
+        return 1.0 if _NAME_LIKE.match(stripped) else 0.5
+    if field_name == "mrn":
+        return 1.0 if len(stripped) >= _MIN_PLAUSIBLE_MRN_LENGTH else 0.5
+    return 1.0
+
+
+def _compute_field_confidence(fields: dict[str, str], base_confidence: float) -> dict[str, float]:
+    return {
+        name: round(base_confidence * _field_plausibility(name, value), 4)
+        for name, value in fields.items()
+    }
+
+
+_MISSING_FIELD_PREFIX = "missing required field"
+_PHI_ISSUE_PREFIX = "phi:"
+
+
+def _categorize_issues(issues: list[str]) -> set[str]:
+    """Maps the *existing* validator issue strings to one of three
+    reporting categories — purely additive labeling for
+    ProcessingResult.metadata. Never changes `issues` itself, never
+    changes `is_valid`, and never introduces a new ADR-0023 failure
+    category (this is validation-issue labeling, a document-level
+    concept ADR-0023 doesn't govern).
+    """
+    categories: set[str] = set()
+    for issue in issues:
+        if issue.startswith(_MISSING_FIELD_PREFIX):
+            categories.add("missing_required_fields")
+        else:
+            # Both a PHI hit and an extraction/field-extraction failure
+            # record mean the data isn't safe/trustworthy to use as-is.
+            categories.add("invalid_data")
+    return categories
+
+
+def _build_metadata(
+    *,
+    confidence: float,
+    field_confidence: dict[str, float],
+    issues: list[str],
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    threshold = get_settings().low_confidence_threshold
+    categories = _categorize_issues(issues)
+    is_low_confidence = confidence < threshold
+    if is_low_confidence:
+        categories.add("uncertain_extraction")
+    low_confidence_fields = sorted(
+        name for name, score in field_confidence.items() if score < threshold
+    )
+
+    metadata: dict[str, str] = {
+        "low_confidence": str(is_low_confidence).lower(),
+        "issue_categories": ",".join(sorted(categories)),
+        "low_confidence_fields": ",".join(low_confidence_fields),
+    }
+    if extra:
+        metadata.update(extra)
+    return metadata
 
 
 async def _persist_failure(
@@ -150,7 +267,14 @@ async def run_processing_pipeline(
         extraction_output = await run_in_threadpool(
             extraction_pipeline.extract, data=data, content_type=document.content_type
         )
-    except ExtractionError as exc:
+    except (ExtractionError, ValueError) as exc:
+        # ValueError alongside ExtractionError: TesseractExtractionPipeline
+        # raises a bare ValueError (not ExtractionError) for a content type
+        # it doesn't recognize — previously uncaught here, which meant the
+        # document was silently left stuck in `processing` while the job
+        # still failed via the worker's generic catch-all. Same terminal
+        # classification either way: both are a property of the input, not
+        # of network conditions.
         await _persist_failure(
             db,
             document,
@@ -186,7 +310,12 @@ async def run_processing_pipeline(
             confidence=extraction_output.confidence,
             is_valid=False,
             issues=phi_precheck.issues,
-            metadata={"outcome": "phi_detected"},
+            metadata=_build_metadata(
+                confidence=extraction_output.confidence,
+                field_confidence={},
+                issues=phi_precheck.issues,
+                extra={"outcome": "phi_detected"},
+            ),
         )
 
     try:
@@ -212,9 +341,10 @@ async def run_processing_pipeline(
     combined_output = ExtractionOutput(
         raw_text=extraction_output.raw_text,
         fields=field_output.fields,
-        confidence=(extraction_output.confidence + field_output.confidence) / 2,
+        confidence=_aggregate_confidence(extraction_output.confidence, field_output.confidence),
     )
     validation_output = validation_pipeline.validate(combined_output)
+    field_confidence = _compute_field_confidence(combined_output.fields, combined_output.confidence)
 
     extraction = ExtractionResult(
         document_id=document.id,
@@ -248,8 +378,14 @@ async def run_processing_pipeline(
         confidence=combined_output.confidence,
         is_valid=validation_output.is_valid,
         issues=validation_output.issues,
-        metadata={
-            "ocr_backend": type(extraction_pipeline).__name__,
-            "field_extraction_backend": type(field_extraction_pipeline).__name__,
-        },
+        field_confidence=field_confidence,
+        metadata=_build_metadata(
+            confidence=combined_output.confidence,
+            field_confidence=field_confidence,
+            issues=validation_output.issues,
+            extra={
+                "ocr_backend": type(extraction_pipeline).__name__,
+                "field_extraction_backend": type(field_extraction_pipeline).__name__,
+            },
+        ),
     )

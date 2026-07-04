@@ -11,27 +11,62 @@ _ALLOWED_FIELD_NAMES = ("patient_name", "date_of_birth", "mrn")
 
 _EXTRACTION_TOOL_NAME = "record_clinical_fields"
 
+# Reinforces the tool description below via a second, independent channel
+# (Anthropic's `system` parameter) — belt-and-suspenders against
+# hallucination, not a redesign of the extraction contract: still the same
+# three fields, still schema-guided via a forced tool call, still "omit
+# rather than guess." Explicitly addresses partial/truncated documents
+# (Increment 6): the model sees documents truncated at
+# `max_input_chars` (docs/adr/0016) and should not treat that boundary as
+# license to speculate about what came after it.
+_SYSTEM_PROMPT = (
+    "You are a precise clinical document field extractor. Extract only "
+    "information that is explicitly and unambiguously present in the "
+    "provided text. Never guess, infer, or fabricate a value that is not "
+    "clearly stated — an omitted field is always preferable to an "
+    "incorrect one. The provided text may be a partial or truncated "
+    "excerpt of a larger document; extract only the fields that are "
+    "completely and clearly present in the visible text, and do not "
+    "speculate about content that may appear before or after it. "
+    "Preserve the exact spelling, punctuation, and format of each value "
+    "exactly as it appears in the source text — do not normalize, "
+    "reformat, or correct it."
+)
+
 _EXTRACTION_TOOL: anthropic.types.ToolParam = {
     "name": _EXTRACTION_TOOL_NAME,
     "description": (
         "Record structured clinical fields found in the document text. Omit "
-        "any field that is not present in the text — never guess or "
-        "fabricate a value."
+        "any field that is not present, that is ambiguous, or that you are "
+        "not fully confident about — never guess or fabricate a value. If "
+        "the text is a partial or truncated excerpt, only record fields "
+        "that are completely and clearly visible in it."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "patient_name": {
                 "type": "string",
-                "description": "Patient's full name, exactly as it appears in the text.",
+                "description": (
+                    "Patient's full name, exactly as it appears in the text. "
+                    "Omit if no full name is clearly present."
+                ),
             },
             "date_of_birth": {
                 "type": "string",
-                "description": ("Patient's date of birth, in the format it appears in the text."),
+                "description": (
+                    "Patient's date of birth, in the format it appears in the text. "
+                    "Omit if no unambiguous date of birth is present — do not use "
+                    "any other date (e.g. visit date, admission date) as a substitute."
+                ),
             },
             "mrn": {
                 "type": "string",
-                "description": ("Medical record number (MRN), exactly as it appears in the text."),
+                "description": (
+                    "Medical record number (MRN), exactly as it appears in the text. "
+                    "Omit if no value is explicitly labeled as an MRN or medical "
+                    "record number — do not substitute another identifier."
+                ),
             },
         },
         "additionalProperties": False,
@@ -84,6 +119,7 @@ class AnthropicFieldExtractionPipeline(FieldExtractionPipeline):
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=1024,
+                system=_SYSTEM_PROMPT,
                 tools=[_EXTRACTION_TOOL],
                 tool_choice={"type": "tool", "name": _EXTRACTION_TOOL_NAME},
                 messages=[
@@ -92,8 +128,11 @@ class AnthropicFieldExtractionPipeline(FieldExtractionPipeline):
                         "content": (
                             "Extract the patient's name, date of birth, and medical "
                             "record number (MRN) from the following clinical document "
-                            "text. Call the tool with only the fields you can find; "
-                            "omit anything not present in the text.\n\n"
+                            "text. Call the tool with only the fields that are clearly "
+                            "and unambiguously present; omit anything not present, "
+                            "uncertain, or only partially visible. The text may be "
+                            "truncated — treat its end as the boundary of what you "
+                            "can see, not evidence of what comes after.\n\n"
                             f"---\n{truncated}\n---"
                         ),
                     }

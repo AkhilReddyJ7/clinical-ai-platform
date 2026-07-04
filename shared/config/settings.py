@@ -38,6 +38,24 @@ class Settings(BaseSettings):
     # API is an unbounded per-request cost.
     anthropic_max_input_chars: int = 12_000
 
+    # Grayscale + contrast normalization + upscaling for small images, and
+    # a best-effort gross-rotation fix via Tesseract's own orientation
+    # detection (see modules/ocr/tesseract.py). Tunable off if it ever
+    # regresses a particular document population, same posture as the
+    # other OCR knobs above.
+    ocr_preprocessing_enabled: bool = True
+    # Tesseract page segmentation mode. 3 ("fully automatic page
+    # segmentation, no OSD") is Tesseract's own default and already
+    # handles ordinary multi-column layouts; exposed explicitly so a
+    # deployment with a different document population (e.g. dense forms)
+    # can tune it without a code change.
+    ocr_psm: int = 3
+
+    # Below this, a ProcessingResult's aggregate confidence is flagged
+    # `low_confidence` in its metadata — a signal for downstream review,
+    # not a validation failure (see modules/processing/pipeline.py).
+    low_confidence_threshold: float = 0.5
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

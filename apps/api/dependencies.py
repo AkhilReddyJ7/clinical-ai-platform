@@ -21,7 +21,11 @@ def get_storage() -> StorageBackend:
 @lru_cache
 def get_extraction_pipeline() -> ExtractionPipeline:
     settings = get_settings()
-    return TesseractExtractionPipeline(max_pdf_pages=settings.max_pdf_pages)
+    return TesseractExtractionPipeline(
+        max_pdf_pages=settings.max_pdf_pages,
+        preprocessing_enabled=settings.ocr_preprocessing_enabled,
+        psm=settings.ocr_psm,
+    )
 
 
 @lru_cache
