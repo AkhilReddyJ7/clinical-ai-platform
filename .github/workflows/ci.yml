@@ -58,14 +58,26 @@ jobs:
 
       - name: Smoke test upload + process against the real stack
         run: |
+          # No ANTHROPIC_API_KEY is provisioned in CI (see docs/adr/0019):
+          # this deliberately does not make a live LLM call on every CI run.
+          # AnthropicFieldExtractionPipeline fails closed per-request when
+          # no key is configured (FieldExtractionError), so the expected
+          # outcome here is a clean "failed" status via the same graceful
+          # failure path as any other extraction failure (docs/adr/0012) —
+          # this still proves the full container/dependency wiring (OCR,
+          # PHI gate, field-extraction stage) works end-to-end, without
+          # needing real credentials or incurring per-run API cost.
           echo "synthetic ci smoke test note" > /tmp/ci-smoke.txt
           doc=$(curl -sf -H "X-API-Key: local-dev-key" \
             -F "file=@/tmp/ci-smoke.txt;type=text/plain" \
             http://localhost:8000/documents)
           echo "upload response: $doc"
           doc_id=$(echo "$doc" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-          curl -sf -H "X-API-Key: local-dev-key" -X POST \
-            "http://localhost:8000/documents/$doc_id/process" | grep -q '"status":"validated"'
+          result=$(curl -sf -H "X-API-Key: local-dev-key" -X POST \
+            "http://localhost:8000/documents/$doc_id/process")
+          echo "process response: $result"
+          echo "$result" | grep -q '"status":"failed"'
+          echo "$result" | grep -q 'Anthropic API key is not configured'
 
       - name: Verify real Tesseract OCR works in the built image
         run: |

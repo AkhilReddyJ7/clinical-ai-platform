@@ -13,8 +13,14 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
-from apps.api.dependencies import get_extraction_pipeline, get_storage, get_validation_pipeline
+from apps.api.dependencies import (
+    get_extraction_pipeline,
+    get_field_extraction_pipeline,
+    get_storage,
+    get_validation_pipeline,
+)
 from apps.api.main import app
+from modules.extraction.mock import MockFieldExtractionPipeline
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
 from modules.ingestion.storage import LocalFileStorage
 from modules.ocr import models as ocr_models  # noqa: F401  (registers ORM table)
@@ -64,6 +70,7 @@ def client(
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_storage] = lambda: test_storage
     app.dependency_overrides[get_extraction_pipeline] = lambda: MockExtractionPipeline()
+    app.dependency_overrides[get_field_extraction_pipeline] = lambda: MockFieldExtractionPipeline()
     app.dependency_overrides[get_validation_pipeline] = lambda: CompositeValidationPipeline(
         [RequiredFieldsValidator(), PHIDetectionValidator()]
     )

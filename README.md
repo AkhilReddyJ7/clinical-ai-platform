@@ -6,9 +6,10 @@ A document intelligence platform for clinical documents: upload, track, and run
 documents through an extraction + validation pipeline.
 
 This is an early-stage local MVP. It is **not** HIPAA-compliant. Extracted
-text is now real (read from whatever you upload); structured fields are
-still synthetic placeholders — **never upload real patient data**, see
-[Status & constraints](#status--constraints).
+text is real (read from whatever you upload), and structured fields are now
+real too — extracted via the Anthropic API (see
+[Status & constraints](#status--constraints)) — **never upload real patient
+data**.
 
 ## Architecture
 
@@ -19,9 +20,11 @@ apps/
 
 modules/
   ingestion/      document registry, upload handling, storage abstraction
-  ocr/            extraction pipeline interface; real text via local
-                   Tesseract OCR (images/PDF) or passthrough (text/plain),
-                   structured fields still synthetic (+ mock for tests)
+  ocr/            OCR pipeline interface: bytes -> raw_text; real text via
+                   local Tesseract OCR (images/PDF) or passthrough
+                   (text/plain) (+ mock for tests)
+  extraction/     field-extraction pipeline interface: raw_text -> structured
+                   fields, via the Anthropic API (+ mock for tests)
   validation/     validation pipeline interface (required-fields rule +
                    PHI-pattern guardrail, composed together)
   auth/           static API-key auth (X-API-Key header) on /documents/*
@@ -41,11 +44,19 @@ implementation behind it:
 - `modules.ocr.base.ExtractionPipeline` — implemented in production by
   `TesseractExtractionPipeline`: real text via local Tesseract OCR
   (`image/png`, `image/jpeg`, `application/pdf` via page rasterization) or
-  direct decode (`text/plain`, no OCR needed). Structured `fields` are
-  still synthetic (shared with `MockExtractionPipeline`, which stays wired
-  into the test suite for speed) — a real field-extraction backend (e.g.
-  LLM-based) implements the same interface and replaces just that part
-  later. See `docs/adr/0010-...`.
+  direct decode (`text/plain`, no OCR needed). Its own `fields` output is a
+  synthetic placeholder (shared with `MockExtractionPipeline`, which stays
+  wired into the test suite for speed) — not read by the pipeline anymore,
+  see `modules.extraction` below. See `docs/adr/0010-...`.
+- `modules.extraction.base.FieldExtractionPipeline` — a second, separate
+  stage (`raw_text -> structured fields`), deliberately split from OCR
+  (`bytes -> raw_text`) rather than folded into it. Implemented in
+  production by `AnthropicFieldExtractionPipeline`: a forced tool call
+  against the Anthropic API for reliably-shaped JSON output, single-provider
+  by design (no provider-agnostic tree built in advance — see
+  `docs/adr/0019-...`). `MockFieldExtractionPipeline` stays wired into the
+  test suite. Requires `ANTHROPIC_API_KEY`; fails closed per-request
+  (a clean `status: failed`, not a crash) when it's not configured.
 - `modules.validation.base.ValidationPipeline` — implemented today by
   `RequiredFieldsValidator` (data completeness) and `PHIDetectionValidator`
   (regex-based guardrail for SSN/email/phone/IP-address/credit-card-shaped
@@ -85,9 +96,15 @@ docker compose up --build
 This starts:
 - `api` — FastAPI app on `http://localhost:8000`, with its own Docker
   healthcheck hitting `/health`. The image includes `tesseract-ocr` for
-  real, local OCR — no API key or external vendor needed.
+  real, local OCR — no API key or external vendor needed for OCR itself.
 - `postgres` — Postgres 16, with a named volume for data and another for
   uploaded files (`uploads_data`, mounted at `/app/data/uploads`)
+
+Structured field extraction (`raw_text` -> `fields`) does need a real
+Anthropic API key: set `ANTHROPIC_API_KEY` in `.env` to enable it. Without
+one, uploads still work and OCR still runs — `POST /documents/{id}/process`
+fails cleanly with `status: failed` at the field-extraction step (no crash,
+no partial writes), rather than silently succeeding with fake data.
 
 Check it's up:
 
@@ -181,21 +198,30 @@ uv run pytest
 make test
 ```
 
-Tests don't require Postgres, Docker, or a Tesseract install — they run
-against an in-memory SQLite database, a temp-directory storage backend, and
-`MockExtractionPipeline`, all via dependency overrides (`tests/conftest.py`).
+Tests don't require Postgres, Docker, a Tesseract install, or a real
+Anthropic API key — they run against an in-memory SQLite database, a
+temp-directory storage backend, `MockExtractionPipeline`, and
+`MockFieldExtractionPipeline`, all via dependency overrides
+(`tests/conftest.py`). No test makes a real network call to Anthropic.
 Coverage: health, upload (incl. size-limit rejection/boundary), registry
 (list/get), pagination, status transitions, required-fields and
 PHI-pattern validation (individually and composed), auth (missing/wrong/
 correct key, fail-closed with no keys
-configured), and the real `TesseractExtractionPipeline`'s dispatch/
+configured), the real `TesseractExtractionPipeline`'s dispatch/
 confidence-aggregation logic (`pytesseract` calls mocked — no binary
-needed) plus true end-to-end tests proving: real `text/plain` content now
-reaches PHI detection *and* gets redacted before persisting (asserting
-against both the API response and a follow-up `GET /result` call, not just
-one response); and a corrupted/mismatched-content-type upload fails
-cleanly (`status: failed`, not stuck in `processing` behind a `500`) —
-neither needs an OCR binary, both exercise real code paths. Image/PDF OCR
+needed), and `AnthropicFieldExtractionPipeline`'s tool-call parsing and
+error handling (the SDK's `messages.create` call mocked directly — rate
+limits, API errors, and connection failures each translated into a clean
+`FieldExtractionError`), plus true end-to-end tests proving: real
+`text/plain` content reaches PHI detection *and* gets redacted before
+persisting, *and* the field-extraction call is never made at all when PHI
+is detected (asserted with a stand-in pipeline that fails the test if
+invoked); a corrupted/mismatched-content-type upload fails cleanly
+(`status: failed`, not stuck in `processing` behind a `500`); a
+field-extraction failure fails cleanly too, while still persisting the
+real (PHI-clean) `raw_text`; and an incomplete LLM response (missing a
+required field) now genuinely fails `RequiredFieldsValidator` — unlike the
+old synthetic fields, which always populated all three. Image/PDF OCR
 itself is verified separately, in Docker — see Continuous integration,
 below.
 
@@ -219,6 +245,14 @@ Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
   bad `docker-compose.yml`, the app regressing back to running as root, the
   named-volume permission bug (`docs/adr/0009-...`), or Tesseract silently
   missing/broken in the image (`docs/adr/0010-...`).
+
+  No `ANTHROPIC_API_KEY` is provisioned in CI — deliberately, to avoid a
+  live LLM call (and its cost) on every push. The upload → process smoke
+  test therefore expects `status: failed` with a
+  `"Anthropic API key is not configured"` issue, which still proves the
+  full container/dependency wiring (OCR, PHI gate, field-extraction stage)
+  works end-to-end via the same graceful failure path as any other
+  extraction failure (`docs/adr/0012-...`). See `docs/adr/0019-...`.
 
 ## API examples
 
@@ -286,14 +320,20 @@ curl -X POST -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{docu
 ```
 
 Runs real OCR against the stored file (Tesseract for images/PDF, direct
-decode for `text/plain`) to produce real `raw_text`, generates still-
-synthetic `fields` (see [Architecture](#architecture)), then runs the
-validation pipeline — including PHI detection against the *real* text —
-**before** persisting anything: if PHI-shaped content is found, a redacted
-placeholder is stored instead of the real text (`fields` become `{}` too),
-and the document's status becomes `failed`. Otherwise the real `raw_text`/
-`fields` are persisted and status becomes `validated` or `failed` based on
-the other validators. See `docs/adr/0011-...`.
+decode for `text/plain`) to produce real `raw_text`, then PHI-checks that
+text **before** anything else happens — including before the field-extraction
+LLM is ever called: if PHI-shaped content is found, a redacted placeholder
+is stored instead of the real text (`fields` become `{}` too, the LLM call
+is skipped entirely), and the document's status becomes `failed`. Otherwise
+the clean `raw_text` is sent to the Anthropic API
+(`AnthropicFieldExtractionPipeline`, see [Architecture](#architecture)) to
+extract real structured `fields` via a forced tool call, the full
+validation pipeline runs against the real result, and status becomes
+`validated` or `failed` based on the validators (including, now genuinely,
+whether the LLM actually found all the required fields). A field-extraction
+failure (missing/invalid API key, rate limit, provider error) also fails
+cleanly — the real, already-PHI-checked `raw_text` is still persisted,
+only `fields` stays empty. See `docs/adr/0011-...` and `docs/adr/0019-...`.
 
 If the uploaded bytes don't actually match the declared content type
 (corrupted file, mismatched `Content-Type`), extraction fails cleanly —
@@ -348,12 +388,14 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
 - **No HIPAA compliance claim.** This is a local development scaffold, not a
   compliant system.
 - **Never upload real patient data — this is more load-bearing than before.**
-  Through Sprint 1, `raw_text` was always synthetic regardless of what you
-  uploaded, so real PHI structurally could not enter the system. As of
-  real OCR (`docs/adr/0010-...`), `raw_text` reflects whatever you actually
-  upload. Structured `fields` are still synthetic placeholders, but the
-  extracted *text* is real. Treat this exactly like any other early-stage
-  system with no compliance controls: synthetic/test data only.
+  Through Sprint 1, both `raw_text` and `fields` were always synthetic
+  regardless of what you uploaded, so real PHI structurally could not enter
+  the system. As of real OCR (`docs/adr/0010-...`) and real, LLM-based
+  field extraction (`docs/adr/0019-...`), both are now real — and the raw
+  text is sent to a third-party API (Anthropic) as part of producing
+  `fields`, which is why the PHI check runs *before* that call, not just
+  before persistence. Treat this exactly like any other early-stage system
+  with no compliance controls: synthetic/test data only.
 - **PHI detection gates database persistence, not just document status.**
   `PHIDetectionValidator` runs before anything derived from the real text
   is written — a PHI finding gets a redacted placeholder
@@ -383,10 +425,16 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   `/documents*` but there's no concept of a user, session, or per-caller
   audit trail yet — anyone with the key has full access. Real identity,
   scoped permissions, and audit logging are future work (`modules/audit`).
-- **Field extraction is still synthetic.** Real OCR (text) shipped; turning
-  that real text into real structured fields needs an LLM (or comparable)
-  backend, which needs a vendor/credential decision not made yet.
+- **Field extraction is real, single-provider (Anthropic), and requires a
+  key you supply.** `AnthropicFieldExtractionPipeline` uses a forced tool
+  call against the Anthropic API — no provider-agnostic tree was built in
+  advance (see `docs/adr/0019-...` for why). Set `ANTHROPIC_API_KEY` (never
+  commit it); without one, the pipeline still constructs successfully but
+  fails closed on every request (`FieldExtractionError`, surfaced as
+  `status: failed`), never silently calling the API with no key. Raw text
+  sent to the API is capped at `ANTHROPIC_MAX_INPUT_CHARS` (default 12,000)
+  to bound per-document cost, the same way `MAX_PDF_PAGES` bounds OCR cost.
 - Extraction, validation, and storage are all interchangeable behind their
-  respective interfaces — extending toward LLM-based field extraction,
-  cloud/vision-LLM OCR, or RAG-based retrieval means adding a new
+  respective interfaces — extending toward a second field-extraction
+  provider, cloud/vision-LLM OCR, or RAG-based retrieval means adding a new
   implementation, not restructuring the API.

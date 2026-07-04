@@ -16,6 +16,7 @@ dependencies = [
     "pytesseract>=0.3.13",
     "pillow>=12.3.0",
     "pypdfium2>=5.11.0",
+    "anthropic>=0.69.0",
 ]
 
 [dependency-groups]

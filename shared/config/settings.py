@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     # anything beyond a local docker compose run; never commit real keys.
     api_keys: str = "local-dev-key"
 
+    # Empty by default: fails closed (AnthropicFieldExtractionPipeline
+    # refuses to construct without a real key) rather than silently calling
+    # the API with an invalid one. Set a real key via .env (gitignored);
+    # never commit it. See docs/adr/0019.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-haiku-4-5"
+    anthropic_timeout_seconds: float = 30.0
+    # Bounds per-document LLM cost the same way max_pdf_pages bounds
+    # per-document OCR cost — an unbounded raw_text length sent to a paid
+    # API is an unbounded per-request cost.
+    anthropic_max_input_chars: int = 12_000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

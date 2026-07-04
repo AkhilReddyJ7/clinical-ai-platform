@@ -82,5 +82,7 @@ def test_text_plain_upload_without_phi_patterns_passes(client: TestClient) -> No
     body = response.json()
 
     assert body["extraction"]["raw_text"] == "patient seen for routine follow-up visit"
-    assert body["extraction"]["confidence"] == 1.0
+    # Average of the OCR stage's confidence (1.0 for text/plain, direct
+    # decode) and MockFieldExtractionPipeline's fixed confidence (0.9).
+    assert body["extraction"]["confidence"] == 0.95
     assert body["validation"]["is_valid"] is True

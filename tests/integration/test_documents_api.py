@@ -135,7 +135,7 @@ def test_process_document_runs_extraction_and_validation(client: TestClient) -> 
 
     body = process_response.json()
     assert body["document"]["status"] in {"validated", "failed"}
-    assert body["extraction"]["fields"]["document_type"] == "text/plain"
+    assert body["extraction"]["fields"]["mrn"].startswith("MOCK-")
     assert isinstance(body["validation"]["is_valid"], bool)
 
     result_response = client.get(f"/documents/{document_id}/result")

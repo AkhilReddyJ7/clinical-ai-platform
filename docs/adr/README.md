@@ -1,8 +1,8 @@
 # Architecture Decision Records
 
 Decisions made during Sprint 1 (MVP slice), Sprint 1.5 (production-readiness
-hardening), and Sprint 2 (auth, PHI detection, real OCR). Each record
-follows: Status, Context, Decision, Consequences.
+hardening), and Sprint 2 (auth, PHI detection, real OCR, LLM-based field
+extraction). Each record follows: Status, Context, Decision, Consequences.
 
 | # | Title | Status |
 |---|---|---|
@@ -15,7 +15,7 @@ follows: Status, Context, Decision, Consequences.
 | [0007](0007-ci-validates-docker-build-and-boot.md) | CI validates the Docker build and boot, not just the Python package | Accepted |
 | [0008](0008-lightweight-regex-phi-detection-not-presidio.md) | Lightweight regex-based PHI detection, not Presidio | Accepted (revisited in 0015, resolved by 0018) |
 | [0009](0009-preseed-upload-directory-ownership-in-image.md) | Pre-seed the upload directory in the image so named-volume ownership is correct | Accepted |
-| [0010](0010-real-local-ocr-via-tesseract-fields-stay-synthetic.md) | Real local OCR via Tesseract; fields stay synthetic pending real extraction | Accepted (resolved by 0011) |
+| [0010](0010-real-local-ocr-via-tesseract-fields-stay-synthetic.md) | Real local OCR via Tesseract; fields stay synthetic pending real extraction | Accepted (resolved by 0011 and 0019) |
 | [0011](0011-phi-detection-gates-persistence.md) | PHI detection gates persistence, not just document status | Accepted |
 | [0012](0012-graceful-extraction-failure-handling.md) | Graceful extraction failure handling | Accepted |
 | [0013](0013-run-extraction-off-the-event-loop.md) | Run extraction (and storage reads) off the event loop | Accepted |
@@ -24,3 +24,4 @@ follows: Status, Context, Decision, Consequences.
 | [0016](0016-cap-per-document-ocr-resource-cost.md) | Cap per-document OCR resource cost | Accepted |
 | [0017](0017-reject-unauthenticated-requests-before-body-read.md) | Reject unauthenticated requests before the body is ever read | Accepted |
 | [0018](0018-evaluated-presidio-not-adopting-yet.md) | Evaluated Microsoft Presidio for PHI detection; not adopting yet | Accepted |
+| [0019](0019-anthropic-field-extraction-and-phi-gates-llm-call.md) | Anthropic-based field extraction; PHI check now gates the LLM call | Accepted |

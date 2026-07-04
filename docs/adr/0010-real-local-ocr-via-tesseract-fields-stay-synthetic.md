@@ -98,3 +98,10 @@ fail on every real upload, regressing the demo's happy path from
   text from every supported content type, not just a narrow `text/plain`
   slice, which was the shape of the alternative epic this one was chosen
   over.
+
+  **Resolved in [0019](0019-anthropic-field-extraction-and-phi-gates-llm-call.md):**
+  `fields` are now real too, via the Anthropic API. `TesseractExtractionPipeline`
+  itself is unchanged (still computes synthetic fields internally, per the
+  "split, don't touch OCR" design in 0019) — but the real pipeline no
+  longer reads that output, always overwriting it with the new
+  field-extraction stage's result.
