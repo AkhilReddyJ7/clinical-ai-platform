@@ -32,3 +32,4 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0021](0021-postgres-backed-job-queue.md) | Postgres-backed job queue, not Redis/Celery | Accepted |
 | [0022](0022-process-api-contract-enqueue-and-return.md) | `/process` becomes enqueue-and-return; `/result` becomes the canonical status/result endpoint | Accepted |
 | [0023](0023-retry-and-backoff-policy-for-processing-jobs.md) | Retry and backoff policy for processing jobs | Accepted |
+| [0024](0024-stale-job-recovery-worker-crash.md) | Stale RUNNING job recovery: reclaiming jobs orphaned by a worker crash | Accepted |
