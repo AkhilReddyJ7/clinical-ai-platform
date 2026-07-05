@@ -1,10 +1,11 @@
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.analytics.schemas import ConfidenceMetricsOut, DocumentMetricsOut, JobMetricsOut
 from modules.ingestion.models import Document, DocumentStatus
 from modules.ocr.models import ExtractionResult
 from modules.processing.models import Job, JobStatus
+from shared.config.settings import get_settings
 
 
 async def get_job_metrics(db: AsyncSession) -> JobMetricsOut:
@@ -51,9 +52,59 @@ async def get_confidence_metrics(db: AsyncSession) -> ConfidenceMetricsOut:
             )
         )
     ).one()
+    low_confidence_count = await db.scalar(
+        select(func.count())
+        .select_from(ExtractionResult)
+        .where(ExtractionResult.confidence < get_settings().low_confidence_threshold)
+    )
     return ConfidenceMetricsOut(
         count=count,
         min=float(min_confidence) if min_confidence is not None else None,
         avg=float(avg_confidence) if avg_confidence is not None else None,
         max=float(max_confidence) if max_confidence is not None else None,
+        low_confidence_count=low_confidence_count or 0,
     )
+
+
+async def list_low_confidence_documents(
+    db: AsyncSession, *, limit: int = 20, offset: int = 0
+) -> tuple[list[ExtractionResult], int]:
+    """Documents whose *current* (latest-by-created_at) ExtractionResult
+    is below settings.low_confidence_threshold (ADR-0036). Portable
+    self-join (GROUP BY document_id, MAX(created_at)), not a Postgres-only
+    DISTINCT ON/window function -- this project's tests run against
+    SQLite (ADR-0004). A document reprocessed to a better result (ADR-0032)
+    correctly drops out of this list once its latest attempt improves,
+    even though the earlier low-confidence attempt still counts toward
+    get_confidence_metrics's low_confidence_count above.
+    """
+    threshold = get_settings().low_confidence_threshold
+
+    latest_per_document = (
+        select(
+            ExtractionResult.document_id,
+            func.max(ExtractionResult.created_at).label("max_created_at"),
+        )
+        .group_by(ExtractionResult.document_id)
+        .subquery()
+    )
+
+    latest_low_confidence = (
+        select(ExtractionResult)
+        .join(
+            latest_per_document,
+            and_(
+                ExtractionResult.document_id == latest_per_document.c.document_id,
+                ExtractionResult.created_at == latest_per_document.c.max_created_at,
+            ),
+        )
+        .where(ExtractionResult.confidence < threshold)
+    )
+
+    total = await db.scalar(select(func.count()).select_from(latest_low_confidence.subquery()))
+    result = await db.execute(
+        latest_low_confidence.order_by(ExtractionResult.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.scalars().all()), total or 0

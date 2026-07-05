@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -7,6 +9,11 @@ class EvalCase(BaseModel):
     expected_fields: dict[str, str] = {}
     expected_phi_labels: list[str] = []
     notes: str = ""
+    # ADR-0036. Default "baseline" keeps the 15 original cases valid
+    # as-is with no JSONL edits. scripts/run_eval.py splits by this
+    # field and reports each group separately -- no change needed to
+    # scoring.py's aggregation functions, which stay category-agnostic.
+    case_type: Literal["baseline", "adversarial"] = "baseline"
 
 
 class FieldMetrics(BaseModel):

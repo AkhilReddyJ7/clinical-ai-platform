@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from modules.analytics.schemas import LowConfidenceDocumentOut
 from modules.audit.schemas import AuditLogEntryOut
 from modules.ingestion.schemas import DocumentOut
 from modules.ocr.schemas import ExtractionResultOut
@@ -85,3 +86,10 @@ class DocumentHistoryEntryOut(BaseModel):
 class DocumentHistoryOut(BaseModel):
     document_id: uuid.UUID
     items: list[DocumentHistoryEntryOut]
+
+
+class LowConfidenceDocumentListOut(BaseModel):
+    items: list[LowConfidenceDocumentOut]
+    total: int
+    limit: int
+    offset: int
