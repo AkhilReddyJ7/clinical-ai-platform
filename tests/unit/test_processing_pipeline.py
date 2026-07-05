@@ -131,6 +131,7 @@ async def test_successful_pipeline_returns_result_and_persists_extraction_and_va
         assert extraction is not None
         assert extraction.job_id == job_id
         assert extraction.fields
+        assert extraction.pipeline_version == "mock"
 
         validation = await db.scalar(
             select(ValidationResult).where(ValidationResult.document_id == document_id)
@@ -169,6 +170,7 @@ async def test_ocr_extraction_error_persists_failure_and_raises_terminal(
         )
         assert extraction is not None
         assert extraction.raw_text.startswith("[EXTRACTION FAILED:")
+        assert extraction.pipeline_version == "mock"
 
 
 @pytest.mark.asyncio

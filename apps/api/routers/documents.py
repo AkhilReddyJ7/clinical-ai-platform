@@ -5,7 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_storage
-from apps.api.schemas import DocumentListOut, ProcessEnqueuedOut, ProcessingStatusOut
+from apps.api.schemas import (
+    DocumentHistoryEntryOut,
+    DocumentHistoryOut,
+    DocumentListOut,
+    ProcessEnqueuedOut,
+    ProcessingStatusOut,
+    ReprocessIn,
+)
 from modules.audit.models import AuditAction
 from modules.audit.service import record_action
 from modules.auth.api_key import require_api_key
@@ -16,7 +23,7 @@ from modules.ingestion.storage import StorageBackend
 from modules.ocr.models import ExtractionResult
 from modules.ocr.schemas import ExtractionResultOut
 from modules.processing.models import Job, JobStatus
-from modules.processing.repository import enqueue_job
+from modules.processing.repository import enqueue_job, force_reprocess_job
 from modules.processing.state_machine import IllegalTransitionError
 from modules.validation.models import ValidationResult
 from modules.validation.schemas import ValidationResultOut
@@ -155,7 +162,69 @@ async def process_document(
         document_id=document_id,
         job_id=job.id,
     )
-    return ProcessEnqueuedOut(document_id=document_id, job_id=job.id, job_status=job.status)
+    return ProcessEnqueuedOut(
+        document_id=document_id,
+        job_id=job.id,
+        job_status=job.status,
+        attempt_number=job.attempt_number,
+        trigger=job.trigger,
+        trigger_note=job.trigger_note,
+    )
+
+
+@router.post(
+    "/{document_id}/reprocess",
+    response_model=ProcessEnqueuedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reprocess_document(
+    document_id: uuid.UUID,
+    body: ReprocessIn = ReprocessIn(),
+    db: AsyncSession = Depends(get_db),
+    caller: str = Depends(require_api_key),
+) -> ProcessEnqueuedOut:
+    """Forces reprocessing of an already-validated document (ADR-0032) --
+    the one deliberate, audited bypass of validated -> processing
+    ADR-0020 left disallowed by default. Distinct from /process: this is
+    the only entry point that can move a validated document back to
+    processing; /process remains for the uploaded/failed cases.
+    """
+    try:
+        job = await force_reprocess_job(db, document_id, trigger_note=body.trigger_note)
+    except IllegalTransitionError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "document is not currently validated; see "
+                f"GET /documents/{document_id}/result for current status"
+            ),
+        ) from None
+
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+
+    logger.info(
+        "forced reprocess job=%s document_id=%s caller=%s trigger_note=%s",
+        job.id,
+        document_id,
+        caller,
+        body.trigger_note,
+    )
+    await record_action(
+        db,
+        caller=caller,
+        action=AuditAction.FORCED_REPROCESS,
+        document_id=document_id,
+        job_id=job.id,
+    )
+    return ProcessEnqueuedOut(
+        document_id=document_id,
+        job_id=job.id,
+        job_status=job.status,
+        attempt_number=job.attempt_number,
+        trigger=job.trigger,
+        trigger_note=job.trigger_note,
+    )
 
 
 @router.get("/{document_id}/result", response_model=ProcessingStatusOut)
@@ -209,3 +278,66 @@ async def get_processing_result(
         document=DocumentOut.model_validate(document),
         job_status=active_job.status if active_job is not None else None,
     )
+
+
+@router.get("/{document_id}/history", response_model=DocumentHistoryOut)
+async def get_document_history(
+    document_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> DocumentHistoryOut:
+    """Every processing attempt for a document, in order (ADR-0031) --
+    not paginated, since a document's attempt count is naturally small,
+    unlike the global /audit or /metrics collections. A job with no
+    matching result row (e.g. a worker-level failure that never reached
+    pipeline.py's _persist_failure) simply reports null pipeline_version/
+    confidence/is_valid -- not every Job has a corresponding result.
+    """
+    document = await ingestion_service.get_document(db, document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+
+    jobs = (
+        (
+            await db.execute(
+                select(Job).where(Job.document_id == document_id).order_by(Job.attempt_number.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    job_ids = [job.id for job in jobs]
+    extraction_by_job = {
+        e.job_id: e
+        for e in (
+            await db.execute(select(ExtractionResult).where(ExtractionResult.job_id.in_(job_ids)))
+        )
+        .scalars()
+        .all()
+    }
+    validation_by_job = {
+        v.job_id: v
+        for v in (
+            await db.execute(select(ValidationResult).where(ValidationResult.job_id.in_(job_ids)))
+        )
+        .scalars()
+        .all()
+    }
+
+    items = [
+        DocumentHistoryEntryOut(
+            job_id=job.id,
+            attempt_number=job.attempt_number,
+            trigger=job.trigger,
+            trigger_note=job.trigger_note,
+            job_status=job.status,
+            created_at=job.created_at,
+            pipeline_version=(
+                extraction_by_job[job.id].pipeline_version if job.id in extraction_by_job else None
+            ),
+            confidence=(
+                extraction_by_job[job.id].confidence if job.id in extraction_by_job else None
+            ),
+            is_valid=(validation_by_job[job.id].is_valid if job.id in validation_by_job else None),
+        )
+        for job in jobs
+    ]
+    return DocumentHistoryOut(document_id=document_id, items=items)

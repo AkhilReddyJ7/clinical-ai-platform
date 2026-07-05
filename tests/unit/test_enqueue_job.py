@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from modules.ingestion.models import Document, DocumentStatus
-from modules.processing.models import Job, JobStatus
+from modules.processing.models import Job, JobStatus, JobTrigger
 from modules.processing.repository import enqueue_job
 from modules.processing.state_machine import IllegalTransitionError
 
@@ -53,6 +53,8 @@ async def test_enqueue_job_creates_a_queued_job_from_uploaded(
         assert job is not None
         assert job.document_id == document.id
         assert job.status == JobStatus.QUEUED
+        assert job.attempt_number == 1
+        assert job.trigger == JobTrigger.INITIAL_SUBMISSION
 
         stored = await session.get(Document, document.id)
         assert stored is not None
@@ -70,6 +72,7 @@ async def test_enqueue_job_creates_a_queued_job_from_failed(
 
         assert job is not None
         assert job.status == JobStatus.QUEUED
+        assert job.trigger == JobTrigger.RESUBMIT_AFTER_FAILURE
         stored = await session.get(Document, document.id)
         assert stored is not None
         assert stored.status == DocumentStatus.PROCESSING
@@ -139,6 +142,9 @@ async def test_a_second_enqueue_after_the_first_completes_creates_a_new_job(
 
         assert second_job is not None
         assert second_job.id != first_job.id
+        assert first_job.attempt_number == 1
+        assert second_job.attempt_number == 2
+        assert second_job.trigger == JobTrigger.RESUBMIT_AFTER_FAILURE
 
         all_jobs = (
             (await session.execute(select(Job).where(Job.document_id == document.id)))

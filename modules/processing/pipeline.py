@@ -275,6 +275,7 @@ async def _persist_failure(
     raw_text: str,
     issues: list[str],
     confidence: float = 0.0,
+    pipeline_version: str | None = None,
 ) -> None:
     """Write a failure ExtractionResult/ValidationResult and fail the document.
 
@@ -289,6 +290,7 @@ async def _persist_failure(
         raw_text=raw_text,
         fields={},
         confidence=confidence,
+        pipeline_version=pipeline_version,
     )
     db.add(extraction)
     validation = ValidationResult(
@@ -371,6 +373,7 @@ async def run_processing_pipeline(
             job,
             raw_text=f"[EXTRACTION FAILED: {exc}]",
             issues=[f"extraction failed: {exc}"],
+            pipeline_version=field_extraction_pipeline.pipeline_version,
         )
         raise TerminalProcessingError(str(exc)) from exc
     else:
@@ -392,6 +395,7 @@ async def run_processing_pipeline(
             raw_text=redacted_raw_text,
             issues=phi_precheck.issues,
             confidence=extraction_output.confidence,
+            pipeline_version=field_extraction_pipeline.pipeline_version,
         )
         # Not a failure per ADR-0023: the PHI gate did exactly its job.
         result = ProcessingResult(
@@ -444,6 +448,7 @@ async def run_processing_pipeline(
             job,
             raw_text=extraction_output.raw_text,
             issues=[f"field extraction failed: {exc}"],
+            pipeline_version=field_extraction_pipeline.pipeline_version,
         )
         raise TerminalProcessingError(str(exc)) from exc
     else:
@@ -468,6 +473,7 @@ async def run_processing_pipeline(
         raw_text=combined_output.raw_text,
         fields=combined_output.fields,
         confidence=combined_output.confidence,
+        pipeline_version=field_extraction_pipeline.pipeline_version,
     )
     db.add(extraction)
     await ingestion_service.update_status(db, document, DocumentStatus.EXTRACTED)

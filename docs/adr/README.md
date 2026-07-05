@@ -39,3 +39,5 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0028](0028-audit-trail-read-api.md) | Audit trail read API | Accepted |
 | [0029](0029-operational-metrics-api.md) | Operational metrics API | Accepted |
 | [0030](0030-evaluation-harness.md) | Evaluation harness | Accepted |
+| [0031](0031-extraction-validation-versioning-and-lineage-schema.md) | Extraction/validation versioning and lineage schema | Accepted |
+| [0032](0032-reprocessing-and-backfill-triggering.md) | Reprocessing and backfill triggering | Accepted |

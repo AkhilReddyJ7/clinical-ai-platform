@@ -25,6 +25,10 @@ def synthesize_fields_from_text(raw_text: str) -> dict[str, str]:
 
 
 class MockFieldExtractionPipeline(FieldExtractionPipeline):
+    @property
+    def pipeline_version(self) -> str:
+        return "mock"
+
     def extract_fields(self, *, raw_text: str) -> FieldExtractionOutput:
         if not raw_text.strip():
             return FieldExtractionOutput(fields={}, confidence=0.0)

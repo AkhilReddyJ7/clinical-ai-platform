@@ -37,13 +37,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.ingestion.models import Document, DocumentStatus
-from modules.processing.models import Job, JobStatus
-from modules.processing.state_machine import validate_document_transition, validate_job_transition
+from modules.processing.models import Job, JobStatus, JobTrigger
+from modules.processing.state_machine import (
+    IllegalTransitionError,
+    validate_document_transition,
+    validate_job_transition,
+)
 from shared.config.settings import Settings, get_settings
 
 
@@ -239,6 +243,20 @@ async def reclaim_stale_job(db: AsyncSession) -> Job | None:
     )
 
 
+async def _next_attempt_number(db: AsyncSession, document_id: uuid.UUID) -> int:
+    """COUNT of existing Job rows for this document + 1 (ADR-0031) -- the
+    lineage ordinal exposed on GET /documents/{id}/history. Race-free
+    only because both callers (enqueue_job, force_reprocess_job) compute
+    this after acquiring the document row's FOR UPDATE lock: a second
+    concurrent caller for the same document blocks on that lock until
+    this transaction commits.
+    """
+    count = await db.scalar(
+        select(func.count()).select_from(Job).where(Job.document_id == document_id)
+    )
+    return (count or 0) + 1
+
+
 async def enqueue_job(db: AsyncSession, document_id: uuid.UUID) -> Job | None:
     """Create a new job for a document and move it to `processing`
     (ADR-0020, ADR-0022's `POST /process`).
@@ -268,7 +286,60 @@ async def enqueue_job(db: AsyncSession, document_id: uuid.UUID) -> Job | None:
 
     validate_document_transition(document.status, DocumentStatus.PROCESSING)
 
-    job = Job(document_id=document.id, status=JobStatus.QUEUED)
+    trigger = (
+        JobTrigger.INITIAL_SUBMISSION
+        if document.status == DocumentStatus.UPLOADED
+        else JobTrigger.RESUBMIT_AFTER_FAILURE
+    )
+    job = Job(
+        document_id=document.id,
+        status=JobStatus.QUEUED,
+        attempt_number=await _next_attempt_number(db, document.id),
+        trigger=trigger,
+    )
+    db.add(job)
+    document.status = DocumentStatus.PROCESSING
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+async def force_reprocess_job(
+    db: AsyncSession, document_id: uuid.UUID, *, trigger_note: str | None = None
+) -> Job | None:
+    """The one deliberate, audited bypass of the validated -> processing
+    edge ADR-0020 left disallowed by default (ADR-0032). Does not touch
+    DOCUMENT_TRANSITIONS or validate_document_transition -- this function
+    *is* the "own explicit, audited action" ADR-0020 anticipated,
+    deliberately narrow so no other caller of the general validator is
+    affected.
+
+    Returns None if the document doesn't exist. Raises
+    IllegalTransitionError if it exists but isn't currently `validated`
+    -- covers both "never validated" and "already has an active job",
+    since a document can only be `validated` with zero active jobs by
+    construction (enqueue_job is the only other job-creating path, and it
+    always moves the document to `processing`).
+
+    Same FOR UPDATE lock as enqueue_job, for the same reason: two
+    concurrent POST /reprocess calls for the same document must not both
+    succeed.
+    """
+    stmt = select(Document).where(Document.id == document_id).with_for_update()
+    document = (await db.execute(stmt)).scalar_one_or_none()
+    if document is None:
+        return None
+
+    if document.status != DocumentStatus.VALIDATED:
+        raise IllegalTransitionError(document.status, DocumentStatus.PROCESSING, kind="document")
+
+    job = Job(
+        document_id=document.id,
+        status=JobStatus.QUEUED,
+        attempt_number=await _next_attempt_number(db, document.id),
+        trigger=JobTrigger.FORCED_REPROCESS,
+        trigger_note=trigger_note,
+    )
     db.add(job)
     document.status = DocumentStatus.PROCESSING
     await db.commit()

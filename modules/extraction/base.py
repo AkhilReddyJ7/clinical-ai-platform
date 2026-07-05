@@ -32,3 +32,13 @@ class FieldExtractionPipeline(ABC):
 
     @abstractmethod
     def extract_fields(self, *, raw_text: str) -> FieldExtractionOutput: ...
+
+    @property
+    def pipeline_version(self) -> str:
+        """Identifies which backend/model produced a result (ADR-0031),
+        recorded on ExtractionResult at persistence time. A concrete
+        property with a default, not abstract: an abstract method would
+        break every test-double subclass that implements nothing beyond
+        extract_fields. Real implementations override this.
+        """
+        return type(self).__name__
