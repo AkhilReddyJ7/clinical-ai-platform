@@ -100,6 +100,10 @@ class AnthropicFieldExtractionPipeline(FieldExtractionPipeline):
         self._model = model
         self._max_input_chars = max_input_chars
 
+    @property
+    def pipeline_version(self) -> str:
+        return f"anthropic:{self._model}"
+
     def extract_fields(self, *, raw_text: str) -> FieldExtractionOutput:
         text = raw_text.strip()
         if not text:

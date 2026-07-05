@@ -431,6 +431,46 @@ failed", is `200` with the state discriminated in the body:
 - Completed or failed: `document.status: "validated"`/`"failed"`, plus
   the `extraction`/`validation` results.
 
+**Force-reprocess a validated document**
+
+```bash
+curl -X POST -H "X-API-Key: local-dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"trigger_note": "manual reprocess: bad OCR on first pass"}' \
+  http://localhost:8000/documents/{document_id}/reprocess
+```
+
+ADR-0020 disallows `validated -> processing` by default (silently
+re-running a trusted result risks overwriting a good one with a worse
+one, at real API cost). `/reprocess` (ADR-0032) is the one deliberate,
+audited exception: `202` and a new job only if the document is
+currently `validated` (`409` otherwise), recorded in the audit trail
+with `action: forced_reprocess`. `/process` remains the entry point for
+`uploaded`/`failed` documents; the two are not interchangeable.
+
+**View a document's full processing history**
+
+```bash
+curl -H "X-API-Key: local-dev-key" http://localhost:8000/documents/{document_id}/history
+```
+
+Every attempt against a document, in order (ADR-0031), each with its
+`attempt_number`, `trigger` (`initial_submission` / `resubmit_after_failure`
+/ `forced_reprocess`), `trigger_note`, and — where a result exists —
+`pipeline_version`, `confidence`, `is_valid`.
+
+**Bulk backfill**
+
+```bash
+make backfill ARGS='--note "backfill: upgrade to claude-haiku-4-6" --dry-run'
+make backfill ARGS='--note "backfill: upgrade to claude-haiku-4-6" --yes'
+```
+
+Reprocesses every currently-`validated` document (optionally filtered by
+`--before`/`--limit`, or a single `--document-id`). `--note` is required.
+Only enqueues — the `worker` service must already be running to actually
+execute the resulting jobs. See `docs/adr/0032-...`.
+
 ## End-to-end demo flow
 
 ```bash

@@ -17,6 +17,18 @@ class JobStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class JobTrigger(str, enum.Enum):
+    """Why this Job row exists (ADR-0031/0032) -- not to be confused with
+    JobStatus.RETRYING, which is an internal transient retry of the same
+    job row, not a new one. A new Job row (and therefore a new trigger)
+    is only ever created on resubmit.
+    """
+
+    INITIAL_SUBMISSION = "initial_submission"
+    RESUBMIT_AFTER_FAILURE = "resubmit_after_failure"
+    FORCED_REPROCESS = "forced_reprocess"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -61,3 +73,16 @@ class Job(Base):
     next_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    # 1-indexed count of this document's Job rows, computed at creation
+    # time (repository.py) under the same document-row lock enqueue_job/
+    # force_reprocess_job already take (ADR-0031) -- the lineage ordinal,
+    # not a Job-table-wide sequence. Pre-existing rows backfill to 1
+    # regardless of true history (see the migration).
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    trigger: Mapped[JobTrigger] = mapped_column(
+        Enum(JobTrigger, native_enum=False, length=30),
+        default=JobTrigger.INITIAL_SUBMISSION,
+    )
+    # Operator-supplied justification for a forced reprocess (ADR-0032).
+    # Always None for INITIAL_SUBMISSION/RESUBMIT_AFTER_FAILURE.
+    trigger_note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)

@@ -1,4 +1,4 @@
-.PHONY: up down build logs test fmt lint migrate revision eval
+.PHONY: up down build logs test fmt lint migrate revision eval backfill
 
 up:
 	docker compose up --build
@@ -30,3 +30,6 @@ lint:
 
 eval:
 	uv run python -m scripts.run_eval $(ARGS)
+
+backfill:
+	uv run python -m scripts.run_backfill $(ARGS)

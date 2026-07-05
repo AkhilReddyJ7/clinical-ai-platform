@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.database.base import Base
@@ -25,3 +25,9 @@ class ExtractionResult(Base):
     fields: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Identifies the field-extraction backend/model that produced this
+    # result (ADR-0031) -- e.g. "anthropic:claude-haiku-4-5" or "mock".
+    # Scoped to field extraction only: the component with a real
+    # versioning axis in practice today. Nullable: pre-existing rows
+    # predate this column.
+    pipeline_version: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)

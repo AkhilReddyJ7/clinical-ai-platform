@@ -324,3 +324,145 @@ async def test_a_409_rejected_process_call_records_no_audit_entry(
         )
 
     assert len(entries) == 1  # only the first, successful enqueue
+
+
+async def _upload_and_validate(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]], *, filename: str
+) -> uuid.UUID:
+    upload = client.post(
+        "/documents",
+        files={"file": (filename, b"synthetic clinical note content", "text/plain")},
+    )
+    document_id = uuid.UUID(upload.json()["id"])
+    client.post(f"/documents/{document_id}/process")
+    await process_job(document_id)
+
+    result = client.get(f"/documents/{document_id}/result")
+    assert result.json()["document"]["status"] == "validated"
+    return document_id
+
+
+@pytest.mark.asyncio
+async def test_reprocess_validated_document_enqueues_a_job(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]]
+) -> None:
+    document_id = await _upload_and_validate(client, process_job, filename="note.txt")
+
+    response = client.post(
+        f"/documents/{document_id}/reprocess", json={"trigger_note": "manual reprocess: spot check"}
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["document_id"] == str(document_id)
+    assert body["job_status"] == "queued"
+    assert body["attempt_number"] == 2
+    assert body["trigger"] == "forced_reprocess"
+    assert body["trigger_note"] == "manual reprocess: spot check"
+
+
+@pytest.mark.asyncio
+async def test_reprocess_without_a_trigger_note_defaults_to_null(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]]
+) -> None:
+    document_id = await _upload_and_validate(client, process_job, filename="note.txt")
+
+    response = client.post(f"/documents/{document_id}/reprocess")
+
+    assert response.status_code == 202
+    assert response.json()["trigger_note"] is None
+
+
+def test_reprocess_uploaded_document_returns_409(client: TestClient) -> None:
+    upload = client.post("/documents", files={"file": ("note.txt", b"note", "text/plain")})
+    document_id = upload.json()["id"]
+
+    response = client.post(f"/documents/{document_id}/reprocess")
+    assert response.status_code == 409
+    assert "not currently validated" in response.json()["detail"]
+
+
+def test_reprocess_processing_document_returns_409(client: TestClient) -> None:
+    upload = client.post(
+        "/documents", files={"file": ("note.txt", b"synthetic clinical note content", "text/plain")}
+    )
+    document_id = upload.json()["id"]
+    client.post(f"/documents/{document_id}/process")
+
+    response = client.post(f"/documents/{document_id}/reprocess")
+    assert response.status_code == 409
+    assert "not currently validated" in response.json()["detail"]
+
+
+def test_reprocess_unknown_document_returns_404(client: TestClient) -> None:
+    response = client.post(f"/documents/{uuid.uuid4()}/reprocess")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reprocess_records_an_audit_entry_with_forced_reprocess_action(
+    client: TestClient,
+    process_job: Callable[[uuid.UUID], Awaitable[None]],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    document_id = await _upload_and_validate(client, process_job, filename="note.txt")
+
+    response = client.post(
+        f"/documents/{document_id}/reprocess", json={"trigger_note": "backfill: batch-1"}
+    )
+    assert response.status_code == 202
+
+    async with session_factory() as session:
+        entries = (
+            (
+                await session.execute(
+                    select(AuditLogEntry).where(
+                        AuditLogEntry.document_id == document_id,
+                        AuditLogEntry.action == AuditAction.FORCED_REPROCESS,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_lists_every_attempt_in_order(
+    client: TestClient, process_job: Callable[[uuid.UUID], Awaitable[None]]
+) -> None:
+    document_id = await _upload_and_validate(client, process_job, filename="note.txt")
+    client.post(f"/documents/{document_id}/reprocess", json={"trigger_note": "backfill: batch-1"})
+    await process_job(document_id)
+
+    response = client.get(f"/documents/{document_id}/history")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["document_id"] == str(document_id)
+    assert len(body["items"]) == 2
+    first, second = body["items"]
+    assert first["attempt_number"] == 1
+    assert first["trigger"] == "initial_submission"
+    assert first["pipeline_version"] == "mock"
+    assert second["attempt_number"] == 2
+    assert second["trigger"] == "forced_reprocess"
+    assert second["trigger_note"] == "backfill: batch-1"
+    assert second["pipeline_version"] == "mock"
+
+
+def test_history_never_processed_document_reports_an_empty_list(client: TestClient) -> None:
+    upload = client.post(
+        "/documents", files={"file": ("note.txt", b"synthetic clinical note content", "text/plain")}
+    )
+    document_id = upload.json()["id"]
+
+    response = client.get(f"/documents/{document_id}/history")
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+def test_history_unknown_document_returns_404(client: TestClient) -> None:
+    response = client.get(f"/documents/{uuid.uuid4()}/history")
+    assert response.status_code == 404

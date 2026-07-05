@@ -3,14 +3,16 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from modules.processing.models import JobStatus, JobTrigger
 
-class ExtractionResultOut(BaseModel):
+
+class JobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     document_id: uuid.UUID
-    raw_text: str
-    fields: dict[str, str]
-    confidence: float
+    status: JobStatus
+    attempt_number: int
+    trigger: JobTrigger
+    trigger_note: str | None
     created_at: datetime
-    pipeline_version: str | None = None

@@ -11,6 +11,7 @@ from shared.database.base import Base
 class AuditAction(str, enum.Enum):
     DOCUMENT_UPLOADED = "document_uploaded"
     JOB_ENQUEUED = "job_enqueued"
+    FORCED_REPROCESS = "forced_reprocess"
 
 
 def _utcnow() -> datetime:
