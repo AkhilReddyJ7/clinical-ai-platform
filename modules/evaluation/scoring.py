@@ -1,6 +1,11 @@
 import difflib
 
-from modules.evaluation.schemas import FieldMetrics, PHIMetrics
+from modules.evaluation.schemas import (
+    FieldMetrics,
+    PHIMetrics,
+    RetrievalMetrics,
+    RetrievalQueryResult,
+)
 
 FUZZY_MATCH_THRESHOLD = 0.85
 
@@ -103,6 +108,80 @@ def score_phi(*, expected_flagged: bool, predicted_flagged: bool) -> tuple[int, 
     if expected_flagged:
         return (0, 0, 1, 0)
     return (0, 0, 0, 1)
+
+
+def dedupe_ranked(ids: list[str]) -> list[str]:
+    """Order-preserving first-occurrence dedup. Retrieval returns ranked
+    *chunks*; relevance labels live at the *document* level (ADR-0037), so
+    a multi-chunk document collapses to its best-ranked chunk's position.
+    """
+    seen: set[str] = set()
+    deduped = []
+    for item in ids:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def recall_at_k(ranked: list[str], relevant: list[str], k: int) -> float:
+    """|relevant found in top k| / |relevant|. Callers must not pass an
+    empty relevant set -- no-answer queries are informational only and
+    never scored (ADR-0037).
+    """
+    if not relevant:
+        raise ValueError("recall_at_k requires a non-empty relevant set")
+    relevant_set = set(relevant)
+    return len(relevant_set & set(ranked[:k])) / len(relevant_set)
+
+
+def hit_at_k(ranked: list[str], relevant: list[str], k: int) -> bool:
+    """Did *any* relevant document appear in the top k. With multiple
+    relevant docs recall@1 is capped at 1/|relevant|, so this answers the
+    separate question "was anything useful surfaced at all".
+    """
+    if not relevant:
+        raise ValueError("hit_at_k requires a non-empty relevant set")
+    return bool(set(relevant) & set(ranked[:k]))
+
+
+def reciprocal_rank(ranked: list[str], relevant: list[str]) -> float:
+    """1 / (1-based rank of the first relevant doc); 0.0 when no relevant
+    doc was retrieved within the ranking at all. Tie-breaking between
+    equal scores is owned by the vector store, not scored here.
+    """
+    if not relevant:
+        raise ValueError("reciprocal_rank requires a non-empty relevant set")
+    relevant_set = set(relevant)
+    for position, doc_id in enumerate(ranked, start=1):
+        if doc_id in relevant_set:
+            return 1.0 / position
+    return 0.0
+
+
+def aggregate_retrieval_metrics(results: list[RetrievalQueryResult]) -> RetrievalMetrics:
+    """Arithmetic means over already-scored queries. Callers pass only
+    queries with a non-empty relevant set; no-answer queries never reach
+    any denominator (ADR-0037).
+    """
+    if not results:
+        return RetrievalMetrics(
+            scored_query_count=0,
+            mrr=0.0,
+            recall_at_1=0.0,
+            recall_at_5=0.0,
+            hit_rate_at_1=0.0,
+            hit_rate_at_5=0.0,
+        )
+    count = len(results)
+    return RetrievalMetrics(
+        scored_query_count=count,
+        mrr=sum(r.reciprocal_rank for r in results) / count,
+        recall_at_1=sum(r.recall_at_1 for r in results) / count,
+        recall_at_5=sum(r.recall_at_5 for r in results) / count,
+        hit_rate_at_1=sum(1 for r in results if r.hit_at_1) / count,
+        hit_rate_at_5=sum(1 for r in results if r.hit_at_5) / count,
+    )
 
 
 def aggregate_phi_metrics(outcomes: list[tuple[int, int, int, int]]) -> PHIMetrics:

@@ -1,4 +1,4 @@
-from modules.evaluation.schemas import EvalReport
+from modules.evaluation.schemas import EvalReport, RetrievalEvalReport, RetrievalQueryResult
 
 _FIELD_HEADER = f"{'field':<16}{'tp':>6}{'fp':>6}{'fn':>6}{'precision':>11}{'recall':>9}{'f1':>9}"
 
@@ -60,4 +60,46 @@ def render_text(report: EvalReport) -> str:
 
 
 def render_json(report: EvalReport) -> str:
+    return report.model_dump_json(indent=2)
+
+
+def _retrieval_query_row(result: RetrievalQueryResult) -> str:
+    return (
+        f"  {result.query_id}: rr={result.reciprocal_rank:.2f} "
+        f"recall@5={result.recall_at_5:.2f} "
+        f"ranked={result.ranked_doc_ids[:5]} relevant={result.relevant_doc_ids}"
+    )
+
+
+def render_retrieval_text(report: RetrievalEvalReport) -> str:
+    """Same stdlib-only restraint as render_text (ADR-0030/0037)."""
+    m = report.metrics
+    lines = [
+        f"Retrieval evaluation report -- pipeline={report.pipeline_name} "
+        f"corpus={report.corpus_path} queries={report.queries_path}",
+        f"docs={report.corpus_doc_count} chunks={report.chunk_count} "
+        f"queries={report.query_count}",
+        "",
+        f"Aggregate metrics over {m.scored_query_count} scored queries:",
+        f"recall@1={m.recall_at_1:.2f} recall@5={m.recall_at_5:.2f} "
+        f"hit@1={m.hit_rate_at_1:.2f} hit@5={m.hit_rate_at_5:.2f} MRR={m.mrr:.2f}",
+        "",
+        "Per-query results:",
+    ]
+    for result in report.queries:
+        lines.append(_retrieval_query_row(result))
+
+    if report.no_answer_queries:
+        lines.append("")
+        lines.append("No-answer queries (informational, not gated):")
+        for result in report.no_answer_queries:
+            top = f"{result.top_score:.3f}" if result.top_score is not None else "n/a"
+            lines.append(
+                f"  {result.query_id}: top-1 score={top} ranked={result.ranked_doc_ids[:3]}"
+            )
+
+    return "\n".join(lines)
+
+
+def render_retrieval_json(report: RetrievalEvalReport) -> str:
     return report.model_dump_json(indent=2)
