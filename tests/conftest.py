@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from apps.api.dependencies import (
+    get_answer_generator,
     get_extraction_pipeline,
     get_field_extraction_pipeline,
     get_phi_validator,
@@ -25,6 +26,7 @@ from apps.api.dependencies import (
 from apps.api.main import app
 from modules.audit import models as audit_models  # noqa: F401  (registers ORM table)
 from modules.extraction.mock import MockFieldExtractionPipeline
+from modules.retrieval.answer_mock import MockAnswerGenerator
 from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
 from modules.retrieval.service import RetrievalService
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
@@ -107,6 +109,7 @@ def client(
         [RequiredFieldsValidator(), PHIDetectionValidator()]
     )
     app.dependency_overrides[get_retrieval_service] = lambda: test_retrieval_service
+    app.dependency_overrides[get_answer_generator] = lambda: MockAnswerGenerator()
     # Mutates the actual Settings singleton rather than overriding a
     # FastAPI dependency: ApiKeyGateMiddleware (modules/auth/middleware.py)
     # reads get_valid_api_keys() directly as a plain function call, bypassing

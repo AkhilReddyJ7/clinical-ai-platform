@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     retrieval_default_top_k: int = 5
     retrieval_max_top_k: int = 20
 
+    # Bounds the total context sent to POST /retrieval/answer's LLM call
+    # (ADR-0038) -- same posture as anthropic_max_input_chars: an unbounded
+    # chunk list is an unbounded per-request cost against a paid API.
+    # Whole chunks are packed in rank order until the budget is exhausted;
+    # at the default retrieval_chunk_size_chars (2000) this fits the
+    # default top_k=5 with headroom.
+    answer_max_context_chars: int = 12_000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

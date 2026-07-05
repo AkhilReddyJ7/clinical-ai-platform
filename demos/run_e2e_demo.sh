@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Scripted end-to-end demo: upload -> process -> poll -> retrieval query.
+# Scripted end-to-end demo: upload -> process -> poll -> retrieval query
+# -> grounded answer.
 # Run against a live `docker compose up --wait` stack. Intended to be the
 # fixed sequence recorded later (e.g. `asciinema rec -c demos/run_e2e_demo.sh
 # demo.cast`) -- see README's "End-to-end demo flow" section.
@@ -38,3 +39,8 @@ echo "=== 5. Retrieval query ==="
 curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"query": "hypertension follow-up", "top_k": 5}' \
   "$BASE_URL/retrieval/query" | python3 -m json.tool
+
+echo "=== 6. Grounded answer (ADR-0038) ==="
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"question": "What is the patient being treated for?"}' \
+  "$BASE_URL/retrieval/answer" | python3 -m json.tool
