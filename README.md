@@ -1,6 +1,8 @@
 # Clinical AI Intelligence Platform
 
 [![CI](https://github.com/AkhilReddyJ7/clinical-ai-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/AkhilReddyJ7/clinical-ai-platform/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 
 An IDP (Intelligent Document Processing) platform for clinical documents:
 upload → OCR → LLM-based structured extraction → validation → durable async
@@ -45,6 +47,27 @@ this project is honest about, not just the parts that look good.
   was.
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    U["Upload"] --> OCR["OCR<br/>Tesseract"]
+    OCR --> PHI{"PHI gate"}
+    PHI -->|clean| LLM["LLM extraction<br/>Anthropic, tool-forced"]
+    PHI -->|flagged| FAIL["Failed<br/>redacted, not persisted"]
+    LLM --> VAL["Validation"]
+    VAL -->|valid| OK["Validated"]
+    VAL -->|invalid| FAIL
+    OK --> IDX["Chunk + embed<br/>fastembed"]
+    IDX --> VDB[("Chroma")]
+    Q["POST /retrieval/query"] --> VDB
+    VDB --> R["Ranked chunks"]
+    OK -.->|"who did what, when"| AUDIT[("Audit log")]
+    LLM -.-> AUDIT
+```
+
+Every arrow above is a real, tested code path, not an aspirational diagram —
+see [API examples](#api-examples) for the actual requests/responses at each
+stage.
 
 ```
 apps/
