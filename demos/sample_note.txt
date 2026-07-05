@@ -1,0 +1,8 @@
+Outpatient follow-up note for patient Elena Vasquez. Date of birth: 1981-09-23.
+Medical record number MRN-204871. Patient presents for a scheduled follow-up
+regarding hypertension management. Blood pressure well controlled on current
+regimen. No new complaints reported. Continue current medication, follow-up
+in three months.
+
+This is a synthetic note generated for demo purposes only -- no real patient
+data.
