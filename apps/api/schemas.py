@@ -2,6 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
+from modules.audit.schemas import AuditLogEntryOut
 from modules.ingestion.schemas import DocumentOut
 from modules.ocr.schemas import ExtractionResultOut
 from modules.processing.models import JobStatus
@@ -38,6 +39,13 @@ class ProcessingStatusOut(BaseModel):
 
 class DocumentListOut(BaseModel):
     items: list[DocumentOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class AuditLogListOut(BaseModel):
+    items: list[AuditLogEntryOut]
     total: int
     limit: int
     offset: int

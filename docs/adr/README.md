@@ -36,3 +36,5 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0025](0025-confidence-and-quality-semantics-model.md) | Confidence and quality semantics model for document processing | Accepted |
 | [0026](0026-named-api-keys-replace-the-shared-static-secret.md) | Named API keys replace the shared static secret | Accepted |
 | [0027](0027-audit-log-schema-and-redaction-policy.md) | Audit log schema and redaction policy | Accepted |
+| [0028](0028-audit-trail-read-api.md) | Audit trail read API | Accepted |
+| [0029](0029-operational-metrics-api.md) | Operational metrics API | Accepted |

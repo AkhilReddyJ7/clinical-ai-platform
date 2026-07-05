@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from modules.audit.models import AuditAction, AuditLogEntry
-from modules.audit.service import record_action
+from modules.audit.service import list_entries, record_action
 from modules.ingestion.models import Document, DocumentStatus
 from modules.processing.models import Job, JobStatus
 
@@ -171,3 +171,88 @@ async def test_record_action_returns_none_and_does_not_raise_on_failure(
         assert stored is not None
         entries = (await verify_session.execute(select(AuditLogEntry))).scalars().all()
         assert entries == []
+
+
+@pytest.mark.asyncio
+async def test_list_entries_orders_newest_first_and_reports_total(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        document = await _make_document(session)
+        first = await record_action(
+            session, caller="alice", action=AuditAction.DOCUMENT_UPLOADED, document_id=document.id
+        )
+        job = await _make_job(session, document)
+        second = await record_action(
+            session,
+            caller="alice",
+            action=AuditAction.JOB_ENQUEUED,
+            document_id=document.id,
+            job_id=job.id,
+        )
+        assert first is not None and second is not None
+
+        entries, total = await list_entries(session)
+
+        assert total == 2
+        assert [e.id for e in entries] == [second.id, first.id]
+
+
+@pytest.mark.asyncio
+async def test_list_entries_filters_are_optional_and_combinable(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        document = await _make_document(session)
+        job = await _make_job(session, document)
+        await record_action(
+            session, caller="alice", action=AuditAction.DOCUMENT_UPLOADED, document_id=document.id
+        )
+        await record_action(
+            session,
+            caller="alice",
+            action=AuditAction.JOB_ENQUEUED,
+            document_id=document.id,
+            job_id=job.id,
+        )
+        await record_action(
+            session, caller="bob", action=AuditAction.DOCUMENT_UPLOADED, document_id=document.id
+        )
+
+        by_caller, by_caller_total = await list_entries(session, caller="bob")
+        assert by_caller_total == 1
+        assert by_caller[0].caller == "bob"
+
+        by_action, by_action_total = await list_entries(session, action=AuditAction.JOB_ENQUEUED)
+        assert by_action_total == 1
+        assert by_action[0].job_id == job.id
+
+        by_both, by_both_total = await list_entries(
+            session, caller="alice", action=AuditAction.DOCUMENT_UPLOADED
+        )
+        assert by_both_total == 1
+        assert by_both[0].caller == "alice"
+        assert by_both[0].action == AuditAction.DOCUMENT_UPLOADED
+
+
+@pytest.mark.asyncio
+async def test_list_entries_paginates_with_limit_and_offset(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        document = await _make_document(session)
+        for _ in range(5):
+            await record_action(
+                session,
+                caller="alice",
+                action=AuditAction.DOCUMENT_UPLOADED,
+                document_id=document.id,
+            )
+
+        first_page, total = await list_entries(session, limit=2, offset=0)
+        second_page, _ = await list_entries(session, limit=2, offset=2)
+
+        assert total == 5
+        assert len(first_page) == 2
+        assert len(second_page) == 2
+        assert {e.id for e in first_page}.isdisjoint({e.id for e in second_page})

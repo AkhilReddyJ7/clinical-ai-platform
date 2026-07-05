@@ -1,5 +1,6 @@
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.audit.models import AuditAction, AuditLogEntry
@@ -39,3 +40,41 @@ async def record_action(
         )
         return None
     return entry
+
+
+async def list_entries(
+    db: AsyncSession,
+    *,
+    caller: str | None = None,
+    action: AuditAction | None = None,
+    document_id: uuid.UUID | None = None,
+    job_id: uuid.UUID | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[AuditLogEntry], int]:
+    """GET /audit's query (ADR-0028): every filter is optional and
+    combinable, each mapping directly to an already-indexed column
+    (ADR-0027) -- no new query path. Global, not caller-scoped: any
+    authenticated caller may query any other caller's entries (ADR-0028
+    section 2), consistent with every other resource in this project
+    having identical access regardless of who's asking.
+    """
+    filters = []
+    if caller is not None:
+        filters.append(AuditLogEntry.caller == caller)
+    if action is not None:
+        filters.append(AuditLogEntry.action == action)
+    if document_id is not None:
+        filters.append(AuditLogEntry.document_id == document_id)
+    if job_id is not None:
+        filters.append(AuditLogEntry.job_id == job_id)
+
+    total = await db.scalar(select(func.count()).select_from(AuditLogEntry).where(*filters))
+    result = await db.execute(
+        select(AuditLogEntry)
+        .where(*filters)
+        .order_by(AuditLogEntry.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.scalars().all()), total or 0
