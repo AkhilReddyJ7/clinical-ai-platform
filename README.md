@@ -499,6 +499,16 @@ the retrieval feature itself was added, or after a chunking/embedding
 parameter change) — runs directly, not through the job queue, since
 indexing has no LLM call.
 
+## Orchestration-framework demo (LlamaIndex)
+
+`demos/llamaindex_rag/` — a comparison demo reimplementing the retrieval
+task above with LlamaIndex instead of `modules/retrieval/`, kept
+deliberately isolated (own `uv` dependency group, not installed by
+`uv sync`, not covered by `mypy`/`pytest`). See
+`demos/llamaindex_rag/README.md` for what it demonstrates and why it's
+separate. Production stays on the raw-SDK approach (ADR-0019); this
+exists to show the other approach is understood too.
+
 ## End-to-end demo flow
 
 ```bash
