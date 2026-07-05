@@ -202,3 +202,14 @@ opening new architectural surface.
 - The caller-visibility question (can a caller see other callers' audit
   entries / metrics) is explicitly open, deferred to each epic's own ADR
   — not decided here.
+
+---
+
+**Dated note (2026-07-04):** Section 3.4's exclusion of RAG, search,
+vector databases, and embeddings is superseded by
+`docs/architecture/idp-platform-pivot-baseline.md`, which adopts these
+as future in-scope phases. Section 3.4's other exclusions (persisted
+per-stage duration analytics, per-key management endpoints) are
+unaffected and remain out of scope. This note is additive, per this
+document's own stated correction convention — section 3.4 above is left
+as originally written.

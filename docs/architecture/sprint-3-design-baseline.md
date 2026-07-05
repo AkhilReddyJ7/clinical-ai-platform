@@ -381,3 +381,13 @@ decision (OCR vendor, PHI detector, LLM provider scope).
 - The `/process` API contract shape (sync vs. enqueue-and-poll) was
   **not** resolved at approval time — it is deferred to its own ADR
   (section 8), to be discussed before that specific decision is finalized.
+
+---
+
+**Dated note (2026-07-04):** Section 11's exclusion of RAG, search,
+vector databases, and embeddings is superseded by
+`docs/architecture/idp-platform-pivot-baseline.md`, which adopts these
+as future in-scope phases. Analytics was resolved separately and on its
+own terms by ADR-0029. This note is additive, per this document's own
+stated correction convention — section 11 above is left as originally
+written.
