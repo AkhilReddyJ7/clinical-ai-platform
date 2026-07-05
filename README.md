@@ -106,7 +106,8 @@ shared/
 
 alembic/          schema migrations (see Migrations, below)
 eval/             labeled evaluation dataset (eval/dataset/cases.jsonl)
-demos/            isolated, non-production demos -- llamaindex_rag/ (Phase D)
+demos/            isolated, non-production demos -- llamaindex_rag/ (Phase D),
+                   run_e2e_demo.sh + sample_note.txt (end-to-end demo script)
 ```
 
 Each pipeline stage is defined as an abstract interface with a concrete
@@ -588,22 +589,21 @@ exists to show the other approach is understood too.
 ## End-to-end demo flow
 
 ```bash
-API_KEY=local-dev-key
-
-# 1. upload
-DOC_ID=$(curl -s -X POST http://localhost:8000/documents \
-  -H "X-API-Key: $API_KEY" \
-  -F "file=@sample_note.txt;type=text/plain" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-
-# 2. confirm it's in the registry
-curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID | python3 -m json.tool
-
-# 3. enqueue it for extraction + validation (returns immediately, 202)
-curl -s -X POST -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/process | python3 -m json.tool
-
-# 4. poll for the result -- the `worker` service processes it asynchronously
-curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result | python3 -m json.tool
+demos/run_e2e_demo.sh
 ```
+
+Runs the fixed sequence below against a running `docker compose up --wait`
+stack, using the committed synthetic `demos/sample_note.txt` (no real patient
+data) so the flow is reproducible without typing anything inline: upload →
+confirm registry entry → enqueue for extraction + validation → poll
+`/result` until the async `worker` finishes → run a `/retrieval/query`
+against the now-indexed document. Override `BASE_URL`/`API_KEY` as env vars
+if needed.
+
+This is also the exact sequence intended to be recorded (e.g. via
+`asciinema rec -c demos/run_e2e_demo.sh demo.cast`) once a real
+`ANTHROPIC_API_KEY` is in place — see the note on real-API verification
+below.
 
 ## Status & constraints
 
@@ -670,8 +670,11 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   API, because no real credits have been available yet (deferred since
   Sprint 2). `make eval ARGS="--live"` (see
   [Evaluation harness](#evaluation-harness)) is the one command that would
-  actually discharge this the moment a real key exists — until then, treat
-  every accuracy claim in this repo as "validated against the mock only."
+  actually discharge this the moment a real key exists, and
+  `demos/run_e2e_demo.sh` (see [End-to-end demo
+  flow](#end-to-end-demo-flow)) is the scripted, recordable proof-of-concept
+  run against the same real pipeline — until then, treat every accuracy
+  claim in this repo as "validated against the mock only."
 - **Retrieval (RAG) is real and built, not a future extension point.**
   Documents are chunked, embedded locally (`fastembed`), and indexed into
   Chroma as they reach `validated`; `POST /retrieval/query` answers queries
