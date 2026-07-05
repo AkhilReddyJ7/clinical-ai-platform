@@ -16,6 +16,8 @@ from modules.processing.events import Event, EventType, subscribe, unsubscribe
 from modules.processing.metrics import metrics
 from modules.processing.models import Job, JobStatus
 from modules.processing.pipeline import run_processing_pipeline
+from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
@@ -97,6 +99,9 @@ async def _run_success(
             validation_pipeline=CompositeValidationPipeline(
                 [RequiredFieldsValidator(), PHIDetectionValidator()]
             ),
+            retrieval_service=RetrievalService(
+                embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
+            ),
         )
 
 
@@ -138,7 +143,7 @@ async def test_each_stage_emits_started_and_completed_events(
         for e in collected_events
         if e.event_type == EventType.PIPELINE_STAGE_COMPLETED
     }
-    expected = {"pipeline_total", "ocr", "field_extraction", "validation"}
+    expected = {"pipeline_total", "ocr", "field_extraction", "validation", "retrieval_indexing"}
     assert started_stages == expected
     assert completed_stages == expected
 
@@ -213,6 +218,9 @@ async def test_ocr_stage_emits_completed_event_with_error_type_even_on_failure(
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
                 ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
+                ),
             )
 
     ocr_completed = [
@@ -265,6 +273,9 @@ async def test_phi_detected_still_emits_confidence_snapshot_and_pipeline_total(
             phi_validator=PHIDetectionValidator(),
             validation_pipeline=CompositeValidationPipeline(
                 [RequiredFieldsValidator(), PHIDetectionValidator()]
+            ),
+            retrieval_service=RetrievalService(
+                embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
             ),
         )
 

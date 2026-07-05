@@ -78,6 +78,41 @@ class Settings(BaseSettings):
     # never mistaken for a dead one.
     job_stale_timeout_seconds: float = 300.0
 
+    # Chroma vector-store connection (ADR-0033) -- api/worker talk to
+    # Chroma's own docker-compose service over HTTP via the lightweight
+    # `chromadb-client` package, not the full server-side `chromadb`
+    # package this project doesn't need to embed.
+    chroma_host: str = "localhost"
+    chroma_port: int = 8001
+    chroma_collection_name: str = "clinical_documents"
+
+    # fastembed's local ONNX embedding model (ADR-0034) -- runs in-process,
+    # no network call at query/index time, no paid API key: consistent
+    # with this project's existing bias toward local/free tooling over a
+    # better-but-paid option (Tesseract over cloud OCR, regex over
+    # Presidio, and now fastembed over Voyage AI here).
+    embedding_model_name: str = "BAAI/bge-small-en-v1.5"
+    # Explicit, not fastembed's own default (which resolves under /tmp).
+    # The Dockerfile bakes the model into this exact path at build time
+    # (overridden to /opt/fastembed_cache in docker-compose.yml -- outside
+    # /app, same reason the venv lives in /opt/venv: docker-compose
+    # bind-mounts the host repo over /app at runtime, which would
+    # otherwise shadow the bake and force a runtime re-download as
+    # appuser into a path it can't write to) so the container never
+    # downloads it at runtime; must match here and there or the bake is
+    # silently wasted.
+    embedding_model_cache_dir: str = "./.fastembed_cache"
+
+    # Chunking parameters for ExtractionResult.raw_text before embedding
+    # (ADR-0034). Character-based, not token-based -- no new tokenizer
+    # dependency, the same posture as anthropic_max_input_chars.
+    retrieval_chunk_size_chars: int = 2_000
+    retrieval_chunk_overlap_chars: int = 200
+
+    # POST /retrieval/query's top_k bounds (ADR-0035).
+    retrieval_default_top_k: int = 5
+    retrieval_max_top_k: int = 20
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

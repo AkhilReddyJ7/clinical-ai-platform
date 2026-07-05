@@ -471,6 +471,34 @@ Reprocesses every currently-`validated` document (optionally filtered by
 Only enqueues — the `worker` service must already be running to actually
 execute the resulting jobs. See `docs/adr/0032-...`.
 
+**Retrieval (RAG) query**
+
+```bash
+curl -X POST -H "X-API-Key: local-dev-key" -H "Content-Type: application/json" \
+  -d '{"query": "diabetes management", "top_k": 5}' \
+  http://localhost:8000/retrieval/query
+```
+
+Every document, once `validated`, is automatically chunked and embedded
+(`fastembed`, local, no paid API — ADR-0034) into Chroma (ADR-0033). PHI
+safety is enforced at index time, not query time: only text that already
+passed both PHI gates (the same ones gating persistence and the LLM
+call) is ever indexed — a `failed` document is never indexed, regardless
+of why it failed. Indexing is best-effort: a Chroma outage never fails
+document processing itself (ADR-0035). Reprocessing a document
+(`/reprocess`, above) replaces its indexed chunks rather than
+accumulating stale ones alongside current ones.
+
+```bash
+make reindex                                        # reindex every validated document
+make reindex ARGS="--document-id <uuid>"
+```
+
+Backfills already-ingested documents into the vector store (e.g. after
+the retrieval feature itself was added, or after a chunking/embedding
+parameter change) — runs directly, not through the job queue, since
+indexing has no LLM call.
+
 ## End-to-end demo flow
 
 ```bash

@@ -19,6 +19,8 @@ from modules.ocr.models import ExtractionResult
 from modules.processing.errors import TerminalProcessingError, TransientProcessingError
 from modules.processing.models import Job, JobStatus
 from modules.processing.pipeline import ProcessingResult, run_processing_pipeline
+from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.models import ValidationResult
 from modules.validation.phi import PHIDetectionValidator
@@ -81,6 +83,7 @@ async def _run_pipeline(
     *,
     extraction_pipeline: ExtractionPipeline,
     field_extraction_pipeline: FieldExtractionPipeline,
+    retrieval_service: RetrievalService | None = None,
 ) -> ProcessingResult:
     return await run_processing_pipeline(
         job,
@@ -91,6 +94,10 @@ async def _run_pipeline(
         phi_validator=PHIDetectionValidator(),
         validation_pipeline=CompositeValidationPipeline(
             [RequiredFieldsValidator(), PHIDetectionValidator()]
+        ),
+        retrieval_service=retrieval_service
+        or RetrievalService(
+            embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
         ),
     )
 

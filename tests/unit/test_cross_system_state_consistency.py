@@ -37,6 +37,8 @@ from modules.processing.models import Job, JobStatus
 from modules.processing.pipeline import run_processing_pipeline
 from modules.processing.repository import mark_job_completed, mark_job_failed, mark_job_retry
 from modules.processing.worker import start_worker, stop_worker
+from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
@@ -213,6 +215,9 @@ async def test_successful_run_db_state_matches_the_emitted_terminal_event(
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
                 ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
+                ),
             )
 
     drained = asyncio.Event()
@@ -265,6 +270,10 @@ async def test_transient_failure_db_state_matches_the_emitted_terminal_event(
                     validation_pipeline=CompositeValidationPipeline(
                         [RequiredFieldsValidator(), PHIDetectionValidator()]
                     ),
+                    retrieval_service=RetrievalService(
+                        embedding_pipeline=MockEmbeddingPipeline(),
+                        vector_store=InMemoryVectorStore(),
+                    ),
                 )
 
     drained = asyncio.Event()
@@ -312,6 +321,9 @@ async def test_terminal_failure_db_state_matches_the_emitted_terminal_event(
                 phi_validator=PHIDetectionValidator(),
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
+                ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
                 ),
             )
 
@@ -363,6 +375,9 @@ async def test_stage_completed_events_occur_while_the_job_is_still_running(
             validation_pipeline=CompositeValidationPipeline(
                 [RequiredFieldsValidator(), PHIDetectionValidator()]
             ),
+            retrieval_service=RetrievalService(
+                embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
+            ),
         )
 
     # run_processing_pipeline never calls mark_job_*, so job.status in the
@@ -373,7 +388,8 @@ async def test_stage_completed_events_occur_while_the_job_is_still_running(
         for e in _sequence_for_job(collected_events, job.id)
         if e.event_type == EventType.PIPELINE_STAGE_COMPLETED
     ]
-    assert len(stage_completed) == 4  # ocr, field_extraction, validation, pipeline_total
+    # ocr, field_extraction, validation, retrieval_indexing, pipeline_total
+    assert len(stage_completed) == 5
 
     async with session_factory() as session:
         stored = await session.get(Job, job.id)
@@ -408,6 +424,9 @@ async def test_document_reaches_terminal_status_before_the_job_does(
             phi_validator=PHIDetectionValidator(),
             validation_pipeline=CompositeValidationPipeline(
                 [RequiredFieldsValidator(), PHIDetectionValidator()]
+            ),
+            retrieval_service=RetrievalService(
+                embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
             ),
         )
 
@@ -469,6 +488,10 @@ async def test_transient_failure_then_retry_then_eventual_success(
                     validation_pipeline=CompositeValidationPipeline(
                         [RequiredFieldsValidator(), PHIDetectionValidator()]
                     ),
+                    retrieval_service=RetrievalService(
+                        embedding_pipeline=MockEmbeddingPipeline(),
+                        vector_store=InMemoryVectorStore(),
+                    ),
                 )
 
     drained = asyncio.Event()
@@ -502,6 +525,9 @@ async def test_transient_failure_then_retry_then_eventual_success(
                 phi_validator=PHIDetectionValidator(),
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
+                ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
                 ),
             )
 
@@ -564,6 +590,9 @@ async def test_pipeline_failure_mid_stage_leaves_a_fully_consistent_failed_state
                 phi_validator=PHIDetectionValidator(),
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
+                ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
                 ),
             )
 

@@ -18,12 +18,15 @@ from apps.api.dependencies import (
     get_extraction_pipeline,
     get_field_extraction_pipeline,
     get_phi_validator,
+    get_retrieval_service,
     get_storage,
     get_validation_pipeline,
 )
 from apps.api.main import app
 from modules.audit import models as audit_models  # noqa: F401  (registers ORM table)
 from modules.extraction.mock import MockFieldExtractionPipeline
+from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
 from modules.ingestion.models import Document, DocumentStatus
 from modules.ingestion.storage import LocalFileStorage
@@ -87,6 +90,14 @@ def client(
             yield session
 
     test_storage = LocalFileStorage(tmp_path / "uploads")
+    # A single shared instance, not `lambda: RetrievalService(...)` -- the
+    # latter would construct a fresh, empty InMemoryVectorStore on every
+    # dependency resolution, so a chunk indexed by one request (via
+    # process_job) would be invisible to a later POST /retrieval/query
+    # request in the same test.
+    test_retrieval_service = RetrievalService(
+        embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
+    )
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_storage] = lambda: test_storage
@@ -95,6 +106,7 @@ def client(
     app.dependency_overrides[get_validation_pipeline] = lambda: CompositeValidationPipeline(
         [RequiredFieldsValidator(), PHIDetectionValidator()]
     )
+    app.dependency_overrides[get_retrieval_service] = lambda: test_retrieval_service
     # Mutates the actual Settings singleton rather than overriding a
     # FastAPI dependency: ApiKeyGateMiddleware (modules/auth/middleware.py)
     # reads get_valid_api_keys() directly as a plain function call, bypassing
@@ -141,6 +153,9 @@ def process_job(
         validation_pipeline = app.dependency_overrides.get(
             get_validation_pipeline, get_validation_pipeline
         )()
+        retrieval_service = app.dependency_overrides.get(
+            get_retrieval_service, get_retrieval_service
+        )()
 
         async def process_job_fn(job: Job) -> object:
             async with session_factory() as db:
@@ -152,6 +167,7 @@ def process_job(
                     field_extraction_pipeline=field_extraction_pipeline,
                     phi_validator=phi_validator,
                     validation_pipeline=validation_pipeline,
+                    retrieval_service=retrieval_service,
                 )
 
         async def _wait_until_terminal() -> None:

@@ -23,6 +23,8 @@ from modules.ocr.mock import MockExtractionPipeline
 from modules.processing.models import Job, JobStatus
 from modules.processing.pipeline import run_processing_pipeline
 from modules.processing.worker import start_worker, stop_worker
+from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
@@ -102,6 +104,10 @@ async def test_transient_pipeline_failure_leaves_job_retrying(
                     validation_pipeline=CompositeValidationPipeline(
                         [RequiredFieldsValidator(), PHIDetectionValidator()]
                     ),
+                    retrieval_service=RetrievalService(
+                        embedding_pipeline=MockEmbeddingPipeline(),
+                        vector_store=InMemoryVectorStore(),
+                    ),
                 )
 
     drained = asyncio.Event()
@@ -146,6 +152,9 @@ async def test_terminal_pipeline_failure_leaves_job_failed(
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
                 ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
+                ),
             )
 
     drained = asyncio.Event()
@@ -185,6 +194,9 @@ async def test_successful_pipeline_leaves_job_completed(
                 phi_validator=PHIDetectionValidator(),
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
+                ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
                 ),
             )
 
