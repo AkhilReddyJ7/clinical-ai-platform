@@ -250,6 +250,31 @@ old synthetic fields, which always populated all three. Image/PDF OCR
 itself is verified separately, in Docker — see Continuous integration,
 below.
 
+## Evaluation harness
+
+`docs/adr/0030-evaluation-harness.md` — measures what the test suite
+above doesn't: whether field extraction is actually *correct* against
+known ground truth, and how well PHI detection recalls injected
+PHI-shaped strings. Scores `eval/dataset/cases.jsonl` (15 hand-labeled
+synthetic clinical notes) against a live pipeline run.
+
+```bash
+make eval                       # mock pipeline -- exercises the harness only, free, no credentials needed
+make eval ARGS="--live"         # real AnthropicFieldExtractionPipeline -- requires ANTHROPIC_API_KEY, costs real API calls
+make eval ARGS="--report-out eval/reports/run.json --fail-under 0.8"
+```
+
+Mock-mode field-extraction scores are expected to be near zero —
+`MockFieldExtractionPipeline` deterministically hashes input text into
+unrelated synthetic values, so it has no way to match the dataset's real
+ground truth. That's not a regression: mock mode only proves the harness
+itself runs end-to-end. PHI-detection scores are meaningful in both
+modes, since PHI detection doesn't depend on which extraction pipeline is
+selected. The real accuracy signal — and the thing that finally
+discharges the live-Anthropic-credentials verification deferred since
+Sprint 2 (`docs/adr/0019-...`) — only comes from `--live` with a real key
+configured.
+
 ## Continuous integration
 
 Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
