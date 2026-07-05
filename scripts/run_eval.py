@@ -58,15 +58,31 @@ def main(argv: list[str] | None = None) -> int:
         pipeline_name = "mock"
 
     cases = load_cases(args.dataset)
+    baseline_cases = [c for c in cases if c.case_type == "baseline"]
+    adversarial_cases = [c for c in cases if c.case_type == "adversarial"]
+
     report = build_report(
         pipeline_name=pipeline_name,
         dataset_path=args.dataset,
-        cases=cases,
+        cases=baseline_cases,
         extractor=extractor,
         phi_validator=PHIDetectionValidator(),
     )
-
     print(render_text(report))
+
+    # Adversarial cases (ADR-0036) are reported separately and are
+    # informational only -- --fail-under gates the baseline report above,
+    # never this one.
+    if adversarial_cases:
+        adversarial_report = build_report(
+            pipeline_name=pipeline_name,
+            dataset_path=args.dataset,
+            cases=adversarial_cases,
+            extractor=extractor,
+            phi_validator=PHIDetectionValidator(),
+        )
+        print("\n=== Adversarial cases (informational, not gated by --fail-under) ===\n")
+        print(render_text(adversarial_report))
 
     if args.report_out:
         args.report_out.parent.mkdir(parents=True, exist_ok=True)

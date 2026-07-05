@@ -5,6 +5,7 @@ baseline section 2).
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -13,6 +14,7 @@ from modules.analytics.service import (
     get_confidence_metrics,
     get_document_metrics,
     get_job_metrics,
+    list_low_confidence_documents,
 )
 from modules.ingestion.models import Document, DocumentStatus
 from modules.ocr.models import ExtractionResult
@@ -108,6 +110,7 @@ async def test_confidence_metrics_are_none_with_no_extraction_results(
         assert metrics.min is None
         assert metrics.avg is None
         assert metrics.max is None
+        assert metrics.low_confidence_count == 0
 
 
 @pytest.mark.asyncio
@@ -130,3 +133,75 @@ async def test_confidence_metrics_aggregate_across_extraction_results(
         assert metrics.min == pytest.approx(0.2)
         assert metrics.avg == pytest.approx(0.5)
         assert metrics.max == pytest.approx(0.8)
+        # default low_confidence_threshold is 0.5 -- only the 0.2 row qualifies
+        assert metrics.low_confidence_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_low_confidence_documents_returns_none_when_empty(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        items, total = await list_low_confidence_documents(session)
+        assert items == []
+        assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_list_low_confidence_documents_returns_documents_below_threshold(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        low_document = await _make_document(session, DocumentStatus.FAILED)
+        high_document = await _make_document(session, DocumentStatus.VALIDATED)
+        session.add_all(
+            [
+                ExtractionResult(document_id=low_document.id, raw_text="a", confidence=0.1),
+                ExtractionResult(document_id=high_document.id, raw_text="b", confidence=0.9),
+            ]
+        )
+        await session.commit()
+
+        items, total = await list_low_confidence_documents(session)
+
+        assert total == 1
+        assert len(items) == 1
+        assert items[0].document_id == low_document.id
+
+
+@pytest.mark.asyncio
+async def test_list_low_confidence_documents_excludes_a_document_reprocessed_to_a_good_result(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The load-bearing case (ADR-0036): a document's FIRST attempt was
+    low-confidence, but its CURRENT (latest) attempt, after a reprocess
+    (ADR-0032), is not -- it must not appear in this list, even though it
+    still contributes to get_confidence_metrics's low_confidence_count.
+    """
+    async with session_factory() as session:
+        document = await _make_document(session, DocumentStatus.VALIDATED)
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                ExtractionResult(
+                    document_id=document.id,
+                    raw_text="first attempt",
+                    confidence=0.1,
+                    created_at=now - timedelta(minutes=10),
+                ),
+                ExtractionResult(
+                    document_id=document.id,
+                    raw_text="reprocessed attempt",
+                    confidence=0.9,
+                    created_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        items, total = await list_low_confidence_documents(session)
+        assert items == []
+        assert total == 0
+
+        confidence_metrics = await get_confidence_metrics(session)
+        assert confidence_metrics.low_confidence_count == 1

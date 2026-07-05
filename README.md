@@ -275,6 +275,15 @@ discharges the live-Anthropic-credentials verification deferred since
 Sprint 2 (`docs/adr/0019-...`) — only comes from `--live` with a real key
 configured.
 
+`eval/dataset/cases.jsonl` also includes 6 adversarial cases
+(`case_type: "adversarial"`, ADR-0036) — prompt-injection attempts and
+obfuscated PHI (spaced-out digits, "at"/"dot" email spelling) — reported
+as a second, separate section by `make eval`, informational only
+(`--fail-under` gates the baseline report, not this one). Two of them
+are *expected* to fail PHI detection: they measure, rather than hide,
+the already-documented gap in the regex-based PHI gate (ADR-0008/0015 —
+no NER, so obfuscated/non-digit PHI shapes aren't caught).
+
 ## Continuous integration
 
 Every push and pull request runs `.github/workflows/ci.yml`, two jobs:

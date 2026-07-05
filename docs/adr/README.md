@@ -44,3 +44,4 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0033](0033-vector-store-selection-for-retrieval.md) | Vector store selection for retrieval | Accepted |
 | [0034](0034-chunking-and-embeddings-strategy-for-clinical-documents.md) | Chunking and embeddings strategy for clinical documents | Accepted |
 | [0035](0035-retrieval-api-shape-and-phi-safety-at-the-retrieval-boundary.md) | Retrieval API shape and PHI safety at the retrieval boundary | Accepted |
+| [0036](0036-guardrails-hardening.md) | Guardrails hardening | Accepted |
