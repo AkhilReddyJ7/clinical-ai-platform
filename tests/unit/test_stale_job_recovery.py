@@ -30,6 +30,22 @@ from shared.config.settings import get_settings
 POLL_INTERVAL = 0.01
 
 
+async def _wait_for_stale_event(collected_events: list[Event], *, timeout: float = 5.0) -> None:
+    """Bounded wait instead of a fixed `sleep(POLL_INTERVAL * 5)`: on a
+    starved CI runner the worker task isn't guaranteed any particular
+    number of loop iterations inside a wall-clock window, which made the
+    positive stale-reclaim tests flake (observed: the JOB_STALE_SKIPPED
+    event simply hadn't been emitted yet). Returns as soon as the event
+    appears; on timeout it returns anyway and lets the caller's own
+    assertions report the failure with their specific message.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if any(e.event_type == EventType.JOB_STALE_SKIPPED for e in collected_events):
+            return
+        await asyncio.sleep(POLL_INTERVAL)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -212,7 +228,7 @@ async def test_worker_loop_reclaims_a_stale_job_and_emits_the_event(
         process_job_fn=unreachable_process_job,
         poll_interval_seconds=POLL_INTERVAL,
     )
-    await asyncio.sleep(POLL_INTERVAL * 5)
+    await _wait_for_stale_event(collected_events)
     await stop_worker(task)
 
     stale_events = [e for e in collected_events if e.event_type == EventType.JOB_STALE_SKIPPED]
@@ -259,7 +275,7 @@ async def test_worker_loop_finalizes_the_document_when_a_stale_reclaim_exhausts_
         process_job_fn=unreachable_process_job,
         poll_interval_seconds=POLL_INTERVAL,
     )
-    await asyncio.sleep(POLL_INTERVAL * 5)
+    await _wait_for_stale_event(collected_events)
     await stop_worker(task)
 
     stale_events = [e for e in collected_events if e.event_type == EventType.JOB_STALE_SKIPPED]
