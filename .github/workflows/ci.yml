@@ -138,7 +138,7 @@ jobs:
           from modules.retrieval.chroma_store import ChromaVectorStore
 
           embedder = FastEmbedEmbeddingPipeline(
-              model_name='BAAI/bge-small-en-v1.5', cache_dir='/app/.fastembed_cache'
+              model_name='BAAI/bge-small-en-v1.5', cache_dir='/opt/fastembed_cache'
           )
           store = ChromaVectorStore(host='chroma', port=8000, collection_name='ci_smoke_test')
 
