@@ -5,6 +5,8 @@ from modules.extraction.base import FieldExtractionPipeline
 from modules.ingestion.storage import LocalFileStorage, StorageBackend
 from modules.ocr.base import ExtractionPipeline
 from modules.ocr.tesseract import TesseractExtractionPipeline
+from modules.retrieval.answer_base import AnswerGenerator
+from modules.retrieval.anthropic_answer import AnthropicAnswerGenerator
 from modules.retrieval.base import EmbeddingPipeline, VectorStore
 from modules.retrieval.chroma_store import ChromaVectorStore
 from modules.retrieval.fastembed_embeddings import FastEmbedEmbeddingPipeline
@@ -74,6 +76,17 @@ def get_vector_store() -> VectorStore:
         host=settings.chroma_host,
         port=settings.chroma_port,
         collection_name=settings.chroma_collection_name,
+    )
+
+
+@lru_cache
+def get_answer_generator() -> AnswerGenerator:
+    settings = get_settings()
+    return AnthropicAnswerGenerator(
+        api_key=settings.anthropic_api_key,
+        model=settings.anthropic_model,
+        timeout_seconds=settings.anthropic_timeout_seconds,
+        max_context_chars=settings.answer_max_context_chars,
     )
 
 

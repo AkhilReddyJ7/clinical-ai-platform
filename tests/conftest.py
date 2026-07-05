@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from apps.api.dependencies import (
+    get_answer_generator,
     get_extraction_pipeline,
     get_field_extraction_pipeline,
     get_phi_validator,
@@ -25,6 +27,7 @@ from apps.api.dependencies import (
 from apps.api.main import app
 from modules.audit import models as audit_models  # noqa: F401  (registers ORM table)
 from modules.extraction.mock import MockFieldExtractionPipeline
+from modules.retrieval.answer_mock import MockAnswerGenerator
 from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
 from modules.retrieval.service import RetrievalService
 from modules.ingestion import models as ingestion_models  # noqa: F401  (registers ORM table)
@@ -33,7 +36,7 @@ from modules.ingestion.storage import LocalFileStorage
 from modules.ocr import models as ocr_models  # noqa: F401  (registers ORM table)
 from modules.ocr.mock import MockExtractionPipeline
 from modules.processing import models as processing_models  # noqa: F401  (registers ORM table)
-from modules.processing.models import Job
+from modules.processing.models import Job, JobStatus
 from modules.processing.pipeline import run_processing_pipeline
 from modules.processing.worker import start_worker, stop_worker
 from modules.validation import models as validation_models  # noqa: F401  (registers ORM table)
@@ -107,6 +110,7 @@ def client(
         [RequiredFieldsValidator(), PHIDetectionValidator()]
     )
     app.dependency_overrides[get_retrieval_service] = lambda: test_retrieval_service
+    app.dependency_overrides[get_answer_generator] = lambda: MockAnswerGenerator()
     # Mutates the actual Settings singleton rather than overriding a
     # FastAPI dependency: ApiKeyGateMiddleware (modules/auth/middleware.py)
     # reads get_valid_api_keys() directly as a plain function call, bypassing
@@ -171,6 +175,15 @@ def process_job(
                 )
 
         async def _wait_until_terminal() -> None:
+            # Waits for the JOB, not just the document: the pipeline
+            # commits the document's terminal status *before* running the
+            # non-fatal retrieval-indexing hook (ADR-0035), so a
+            # document-status wait can return while indexing is still in
+            # flight -- a test that queries retrieval immediately after
+            # would race it (observed as a CI-only flake). The worker
+            # writes the job's terminal status only after
+            # run_processing_pipeline returns, indexing included.
+            terminal_job_statuses = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
             while True:
                 async with session_factory() as session:
                     document = await session.get(Document, document_id)
@@ -178,7 +191,17 @@ def process_job(
                         DocumentStatus.VALIDATED,
                         DocumentStatus.FAILED,
                     ):
-                        return
+                        jobs = (
+                            (
+                                await session.execute(
+                                    select(Job).where(Job.document_id == document_id)
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        if jobs and all(job.status in terminal_job_statuses for job in jobs):
+                            return
                 await asyncio.sleep(PROCESS_JOB_POLL_INTERVAL)
 
         task = await start_worker(
