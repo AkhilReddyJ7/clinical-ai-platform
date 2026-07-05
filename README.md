@@ -6,9 +6,11 @@
 
 An IDP (Intelligent Document Processing) platform for clinical documents:
 upload → OCR → LLM-based structured extraction → validation → durable async
-processing, plus retrieval (RAG) over the processed corpus, an evaluation
-harness, and guardrail hardening — the same shape of system a real clinical
-IDP product team owns end to end.
+processing, plus full RAG over the processed corpus — retrieval *and*
+grounded, citation-backed question answering — an evaluation harness that
+scores extraction, PHI detection, and retrieval quality, and guardrail
+hardening — the same shape of system a real clinical IDP product team owns
+end to end.
 
 This is an early-stage local system, not a compliant production deployment.
 It is **not** HIPAA-compliant, and there is no hosted/public instance —
@@ -25,22 +27,29 @@ this project is honest about, not just the parts that look good.
   validation, backed by a durable Postgres state machine (document *and*
   job lifecycles modeled separately), an async worker, and retry/backoff
   with stale-job recovery.
-- **RAG**: documents are chunked, embedded locally (`fastembed`, no paid
-  embeddings API), and indexed into Chroma as they're validated; a
-  retrieval API answers queries over the corpus, with PHI safety enforced
-  at the point of indexing, not as an afterthought. A second,
-  isolated implementation via LlamaIndex demonstrates the same task
-  through an orchestration framework, kept out of the production path.
-- **Evaluation harness**: a labeled synthetic dataset scores field-extraction
-  accuracy and PHI-detection recall/precision — including adversarial cases
+- **Full RAG, retrieval through grounded answers**: documents are chunked,
+  embedded locally (`fastembed`, no paid embeddings API), and indexed into
+  Chroma as they're validated, with PHI safety enforced at the point of
+  indexing, not as an afterthought. `POST /retrieval/query` returns ranked
+  chunks; `POST /retrieval/answer` (ADR-0038) generates an answer grounded
+  strictly in the retrieved passages, with citations resolved server-side —
+  the model cites opaque passage numbers and never sees a document id it
+  could hallucinate — and a first-class abstention path instead of guessing.
+  A second, isolated implementation via LlamaIndex demonstrates the same
+  task through an orchestration framework, kept out of the production path.
+- **Evaluation harness**: labeled synthetic datasets score field-extraction
+  accuracy, PHI-detection recall/precision — including adversarial cases
   (prompt injection, obfuscated PHI) that turn a known guardrail gap into a
-  measured, regression-tracked number instead of just a documented one.
+  measured, regression-tracked number instead of just a documented one —
+  and, as of ADR-0037, retrieval quality itself (recall@k, MRR against a
+  labeled query→document set), where the default mode runs the real local
+  embedding model so real ranking quality is measured at zero API cost.
 - **Data lineage and operability**: every processing attempt is versioned
   and attributable (why it ran, which pipeline version produced it); a
   document can be deliberately, audibly reprocessed; audit and operational
   metrics (including low-confidence-document triage) are queryable via API,
   not just visible in a database client.
-- **36 ADRs**, one per non-trivial architectural decision, each stating the
+- **38 ADRs**, one per non-trivial architectural decision, each stating the
   problem, the choice, and the tradeoff — including several that document
   *why something was deliberately not built* (a second LLM provider, RBAC,
   a self-consistency verification pass, a fine-tuning demo), not just what
@@ -61,6 +70,9 @@ flowchart LR
     IDX --> VDB[("Chroma")]
     Q["POST /retrieval/query"] --> VDB
     VDB --> R["Ranked chunks"]
+    QA["POST /retrieval/answer"] --> VDB
+    VDB --> GEN["Grounded answer<br/>Anthropic, tool-forced"]
+    GEN --> ANS["Answer + citations<br/>or abstention"]
     OK -.->|"who did what, when"| AUDIT[("Audit log")]
     LLM -.-> AUDIT
 ```
@@ -89,9 +101,12 @@ modules/
                    retry/backoff, stale-job recovery, the pipeline
                    orchestration itself (ADR-0020/0021/0023/0024)
   retrieval/      chunking, local embeddings (fastembed), Chroma-backed
-                   vector store, retrieval service (ADR-0033/0034/0035)
-  evaluation/     labeled eval dataset, field/PHI scoring, report
-                   rendering (ADR-0030) -- see eval/dataset/cases.jsonl
+                   vector store, retrieval service (ADR-0033/0034/0035),
+                   grounded answer generation over retrieved chunks
+                   (Anthropic forced tool call, ADR-0038)
+  evaluation/     labeled eval datasets, field/PHI scoring and retrieval
+                   recall@k/MRR scoring, report rendering (ADR-0030/0037)
+                   -- see eval/dataset/
   analytics/      operational metrics: queue depth, retry/failure counts,
                    confidence distribution, low-confidence triage
                    (ADR-0029/0036)
@@ -105,7 +120,9 @@ shared/
   database/       SQLAlchemy async engine/session, declarative Base
 
 alembic/          schema migrations (see Migrations, below)
-eval/             labeled evaluation dataset (eval/dataset/cases.jsonl)
+eval/             labeled evaluation datasets: extraction/PHI cases
+                   (cases.jsonl) and the retrieval corpus + query set
+                   (retrieval_corpus.jsonl, retrieval_queries.jsonl)
 demos/            isolated, non-production demos -- llamaindex_rag/ (Phase D),
                    run_e2e_demo.sh + sample_note.txt (end-to-end demo script)
 ```
@@ -352,6 +369,31 @@ are *expected* to fail PHI detection: they measure, rather than hide,
 the already-documented gap in the regex-based PHI gate (ADR-0008/0015 —
 no NER, so obfuscated/non-digit PHI shapes aren't caught).
 
+### Retrieval quality
+
+`docs/adr/0037-retrieval-quality-evaluation.md` — scores the retrieval
+stack itself (recall@1/5, hit-rate@1/5, MRR) against a dedicated labeled
+corpus (`eval/dataset/retrieval_corpus.jsonl`, 16 synthetic notes with
+distinct clinical topics) and query set (`retrieval_queries.jsonl`, 14
+queries including multi-relevant and deliberately unanswerable ones).
+Relevance is labeled at the **document** level, so re-chunking never
+invalidates the ground truth.
+
+```bash
+make eval-retrieval                 # real fastembed embeddings -- local and free, measures real ranking quality
+make eval-retrieval ARGS="--mock"   # hash-based mock vectors -- plumbing check only
+make eval-retrieval ARGS="--report-out eval/reports/retrieval.json --fail-under 0.8"
+```
+
+Unlike `make eval`, the *default* mode here is the real model — fastembed
+runs locally at zero API cost, so there's no reason to settle for mock
+rankings (`--fail-under` gates recall@5). Measured baseline at adoption:
+recall@5 = 1.00, MRR = 1.00, recall@1 = 0.92 (the two multi-relevant
+queries cap recall@1 at 0.5 each, by construction). The two unanswerable
+queries are reported with their top-1 scores, informational only — the
+observed score gap against genuine hits is the data a future abstention
+threshold would be built on.
+
 ## Continuous integration
 
 Every push and pull request runs `.github/workflows/ci.yml`, two jobs:
@@ -576,6 +618,46 @@ the retrieval feature itself was added, or after a chunking/embedding
 parameter change) — runs directly, not through the job queue, since
 indexing has no LLM call.
 
+**Grounded answer (RAG Q&A)**
+
+```bash
+curl -X POST -H "X-API-Key: local-dev-key" -H "Content-Type: application/json" \
+  -d '{"question": "What is the patient being treated for?"}' \
+  http://localhost:8000/retrieval/answer
+```
+
+```json
+{
+  "question": "What is the patient being treated for?",
+  "answer": "The patient is being treated for hypertension with lisinopril 20 mg daily.",
+  "insufficient_context": false,
+  "citations": [
+    {
+      "document_id": "9acadc34-...",
+      "extraction_id": "d3b1a6f2-...",
+      "chunk_index": 0,
+      "chunk_text": "...lisinopril 20 mg daily...",
+      "score": 0.78
+    }
+  ]
+}
+```
+
+Retrieves the top chunks for the question, then generates an answer via
+the Anthropic API **grounded strictly in those passages** — a forced tool
+call whose schema requires an explicit `insufficient_context` abstention
+flag, so "the context doesn't contain this" is a first-class `200`, never
+a fabricated answer (ADR-0038). The model cites opaque 1-based passage
+numbers and never sees a document id — ids are resolved server-side, so a
+citation can't be hallucinated into a valid-looking reference; invalid
+citations are dropped rather than failing a good answer. An empty corpus
+short-circuits deterministically **without** calling the paid API. This
+is the codebase's one synchronous in-request LLM call — a deliberate,
+documented break from the everything-through-the-worker pattern, since
+Q&A is a read, not a state mutation. Requires `ANTHROPIC_API_KEY`
+(`503` if unconfigured, `502` on provider failure — static error details
+only; provider text is logged server-side, never echoed).
+
 ## Orchestration-framework demo (LlamaIndex)
 
 `demos/llamaindex_rag/` — a comparison demo reimplementing the retrieval
@@ -597,8 +679,9 @@ stack, using the committed synthetic `demos/sample_note.txt` (no real patient
 data) so the flow is reproducible without typing anything inline: upload →
 confirm registry entry → enqueue for extraction + validation → poll
 `/result` until the async `worker` finishes → run a `/retrieval/query`
-against the now-indexed document. Override `BASE_URL`/`API_KEY` as env vars
-if needed.
+against the now-indexed document → ask a question via `/retrieval/answer`
+and get a grounded, cited answer back. Override `BASE_URL`/`API_KEY` as env
+vars if needed.
 
 This is also the exact sequence intended to be recorded (e.g. via
 `asciinema rec -c demos/run_e2e_demo.sh demo.cast`) once a real
@@ -675,11 +758,16 @@ below.
   flow](#end-to-end-demo-flow)) is the scripted, recordable proof-of-concept
   run against the same real pipeline — until then, treat every accuracy
   claim in this repo as "validated against the mock only."
-- **Retrieval (RAG) is real and built, not a future extension point.**
-  Documents are chunked, embedded locally (`fastembed`), and indexed into
-  Chroma as they reach `validated`; `POST /retrieval/query` answers queries
-  over the corpus — see "Retrieval (RAG) query" under
-  [API examples](#api-examples) and `docs/adr/0033-...`–`0035-...`.
+- **RAG is real and complete — retrieval, measured quality, and grounded
+  answers — not a future extension point.** Documents are chunked, embedded
+  locally (`fastembed`), and indexed into Chroma as they reach `validated`;
+  `POST /retrieval/query` returns ranked chunks, `POST /retrieval/answer`
+  generates a grounded, cited answer over them (ADR-0038), and retrieval
+  ranking quality is regression-tracked by `make eval-retrieval`
+  (recall@k/MRR, ADR-0037) — see [API examples](#api-examples) and
+  `docs/adr/0033-...`–`0038-...`. The answer endpoint shares the
+  never-verified-against-the-real-API caveat above: its unit/integration
+  tests mock the SDK, and the one live test is skipped without a real key.
 - Extraction, validation, storage, embeddings, and the vector store are all
   interchangeable behind their respective interfaces — a second
   field-extraction provider, cloud/vision-LLM OCR, or a different embedding
