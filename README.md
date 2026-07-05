@@ -2,14 +2,47 @@
 
 [![CI](https://github.com/AkhilReddyJ7/clinical-ai-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/AkhilReddyJ7/clinical-ai-platform/actions/workflows/ci.yml)
 
-A document intelligence platform for clinical documents: upload, track, and run
-documents through an extraction + validation pipeline.
+An IDP (Intelligent Document Processing) platform for clinical documents:
+upload → OCR → LLM-based structured extraction → validation → durable async
+processing, plus retrieval (RAG) over the processed corpus, an evaluation
+harness, and guardrail hardening — the same shape of system a real clinical
+IDP product team owns end to end.
 
-This is an early-stage local MVP. It is **not** HIPAA-compliant. Extracted
-text is real (read from whatever you upload), and structured fields are now
-real too — extracted via the Anthropic API (see
-[Status & constraints](#status--constraints)) — **never upload real patient
-data**.
+This is an early-stage local system, not a compliant production deployment.
+It is **not** HIPAA-compliant, and there is no hosted/public instance —
+everything here runs locally via `docker compose up`. Extracted text is real
+(read from whatever you upload), and structured fields are extracted for
+real via the Anthropic API — **never upload real patient data**. See
+[Status & constraints](#status--constraints) for the specific, current gaps
+this project is honest about, not just the parts that look good.
+
+### Highlights
+
+- **Full IDP pipeline**: upload → real OCR (Tesseract) → PHI gate → real
+  LLM field extraction (Anthropic, tool-forced structured output) →
+  validation, backed by a durable Postgres state machine (document *and*
+  job lifecycles modeled separately), an async worker, and retry/backoff
+  with stale-job recovery.
+- **RAG**: documents are chunked, embedded locally (`fastembed`, no paid
+  embeddings API), and indexed into Chroma as they're validated; a
+  retrieval API answers queries over the corpus, with PHI safety enforced
+  at the point of indexing, not as an afterthought. A second,
+  isolated implementation via LlamaIndex demonstrates the same task
+  through an orchestration framework, kept out of the production path.
+- **Evaluation harness**: a labeled synthetic dataset scores field-extraction
+  accuracy and PHI-detection recall/precision — including adversarial cases
+  (prompt injection, obfuscated PHI) that turn a known guardrail gap into a
+  measured, regression-tracked number instead of just a documented one.
+- **Data lineage and operability**: every processing attempt is versioned
+  and attributable (why it ran, which pipeline version produced it); a
+  document can be deliberately, audibly reprocessed; audit and operational
+  metrics (including low-confidence-document triage) are queryable via API,
+  not just visible in a database client.
+- **36 ADRs**, one per non-trivial architectural decision, each stating the
+  problem, the choice, and the tradeoff — including several that document
+  *why something was deliberately not built* (a second LLM provider, RBAC,
+  a self-consistency verification pass, a fine-tuning demo), not just what
+  was.
 
 ## Architecture
 
@@ -29,10 +62,19 @@ modules/
                    fields, via the Anthropic API (+ mock for tests)
   validation/     validation pipeline interface (required-fields rule +
                    PHI-pattern guardrail, composed together)
+  processing/     document/job state machines, Postgres-backed queue,
+                   retry/backoff, stale-job recovery, the pipeline
+                   orchestration itself (ADR-0020/0021/0023/0024)
+  retrieval/      chunking, local embeddings (fastembed), Chroma-backed
+                   vector store, retrieval service (ADR-0033/0034/0035)
+  evaluation/     labeled eval dataset, field/PHI scoring, report
+                   rendering (ADR-0030) -- see eval/dataset/cases.jsonl
+  analytics/      operational metrics: queue depth, retry/failure counts,
+                   confidence distribution, low-confidence triage
+                   (ADR-0029/0036)
   auth/           named API-key auth (X-API-Key header, ADR-0026) on
                    /documents/*
-  audit/          who-did-what-when recording (ADR-0027); no query API yet
-  analytics/ indexing/ layout/ search/         reserved for future work
+  audit/          who-did-what-when recording and a read API (ADR-0027/0028)
 
 shared/
   config/         centralized Settings (env-driven)
@@ -40,6 +82,8 @@ shared/
   database/       SQLAlchemy async engine/session, declarative Base
 
 alembic/          schema migrations (see Migrations, below)
+eval/             labeled evaluation dataset (eval/dataset/cases.jsonl)
+demos/            isolated, non-production demos -- llamaindex_rag/ (Phase D)
 ```
 
 Each pipeline stage is defined as an abstract interface with a concrete
@@ -542,6 +586,12 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
 
 - **No HIPAA compliance claim.** This is a local development scaffold, not a
   compliant system.
+- **No hosted/public deployment.** Everything in this README runs via
+  `docker compose up` on your own machine — there is no live URL to point at.
+  CI (`.github/workflows/ci.yml`) builds and exercises the full stack
+  (Postgres, Chroma, the real Tesseract/fastembed binaries) on every push,
+  which is the closest thing to a "does this actually work end to end"
+  check that exists today.
 - **Never upload real patient data — this is more load-bearing than before.**
   Through Sprint 1, both `raw_text` and `fields` were always synthetic
   regardless of what you uploaded, so real PHI structurally could not enter
@@ -576,23 +626,36 @@ curl -s -H "X-API-Key: $API_KEY" http://localhost:8000/documents/$DOC_ID/result 
   image growth depending on model choice, and accuracy that wasn't a
   clean win (missed an SSN this project's own regex catches reliably) —
   and **not adopted**. See `docs/adr/0015-...` and `docs/adr/0018-...`.
+  This gap is no longer just a one-time historical evaluation — the
+  evaluation harness's adversarial cases (ADR-0036) re-measure it on every
+  `make eval` run (spaced-digit SSNs, "at"/"dot"-obfuscated emails), so a
+  regression or an improvement here shows up as a number, not a memory.
 - **Auth is named keys, not scoped identity.** `X-API-Key` gates
-  `/documents*`, and each configured key now resolves to a name (ADR-0026)
-  — every named key still has identical access. Who uploaded a document or
-  enqueued a job is now durably recorded (ADR-0027, `audit_log_entries`),
-  but there's no query API for it yet, and no scoped
-  permissions/sessions/OAuth — both explicitly out of these two ADRs'
-  bounded scope.
-- **Field extraction is real, single-provider (Anthropic), and requires a
-  key you supply.** `AnthropicFieldExtractionPipeline` uses a forced tool
-  call against the Anthropic API — no provider-agnostic tree was built in
-  advance (see `docs/adr/0019-...` for why). Set `ANTHROPIC_API_KEY` (never
-  commit it); without one, the pipeline still constructs successfully but
-  fails closed on every request (`FieldExtractionError`, surfaced as
-  `status: failed`), never silently calling the API with no key. Raw text
-  sent to the API is capped at `ANTHROPIC_MAX_INPUT_CHARS` (default 12,000)
-  to bound per-document cost, the same way `MAX_PDF_PAGES` bounds OCR cost.
-- Extraction, validation, and storage are all interchangeable behind their
-  respective interfaces — extending toward a second field-extraction
-  provider, cloud/vision-LLM OCR, or RAG-based retrieval means adding a new
-  implementation, not restructuring the API.
+  `/documents*`/`/audit`/`/metrics`/`/retrieval`, and each configured key
+  resolves to a name (ADR-0026) — every named key still has identical
+  access; there's no scoped permissions/sessions/OAuth (explicitly out of
+  scope). Who uploaded a document or enqueued a job is durably recorded
+  (ADR-0027) **and queryable** via `GET /audit` (ADR-0028) — filterable by
+  caller/action/document/job, paginated.
+- **Field extraction is real, single-provider (Anthropic) — and, as of this
+  writing, still never verified against the real API.** `AnthropicFieldExtractionPipeline`
+  uses a forced tool call against the Anthropic API (`docs/adr/0019-...`);
+  set `ANTHROPIC_API_KEY` (never commit it) or it fails closed cleanly
+  (`status: failed`), never silently calling out with no key. **This is the
+  single biggest open item in the whole project**: every test, every eval
+  run, every demo in this repo has exercised the mock pipeline, not the real
+  API, because no real credits have been available yet (deferred since
+  Sprint 2). `make eval ARGS="--live"` (see
+  [Evaluation harness](#evaluation-harness)) is the one command that would
+  actually discharge this the moment a real key exists — until then, treat
+  every accuracy claim in this repo as "validated against the mock only."
+- **Retrieval (RAG) is real and built, not a future extension point.**
+  Documents are chunked, embedded locally (`fastembed`), and indexed into
+  Chroma as they reach `validated`; `POST /retrieval/query` answers queries
+  over the corpus — see "Retrieval (RAG) query" under
+  [API examples](#api-examples) and `docs/adr/0033-...`–`0035-...`.
+- Extraction, validation, storage, embeddings, and the vector store are all
+  interchangeable behind their respective interfaces — a second
+  field-extraction provider, cloud/vision-LLM OCR, or a different embedding
+  model/vector store means adding a new implementation, not restructuring
+  the API.
