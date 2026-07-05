@@ -38,3 +38,4 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0027](0027-audit-log-schema-and-redaction-policy.md) | Audit log schema and redaction policy | Accepted |
 | [0028](0028-audit-trail-read-api.md) | Audit trail read API | Accepted |
 | [0029](0029-operational-metrics-api.md) | Operational metrics API | Accepted |
+| [0030](0030-evaluation-harness.md) | Evaluation harness | Accepted |

@@ -1,4 +1,4 @@
-.PHONY: up down build logs test fmt lint migrate revision
+.PHONY: up down build logs test fmt lint migrate revision eval
 
 up:
 	docker compose up --build
@@ -27,3 +27,6 @@ fmt:
 
 lint:
 	uv run ruff check .
+
+eval:
+	uv run python -m scripts.run_eval $(ARGS)
