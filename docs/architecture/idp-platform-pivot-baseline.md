@@ -314,3 +314,30 @@ Phases D and F are explicitly scoped to not require a full ADR (sections
   sequencing, not implementation detail.
 - The existing Sprint 1-4 foundation is retained as-is; this pivot adds
   capability layers on top of it, it does not revisit or replace it.
+
+---
+
+**Dated note (2026-07-05):** Phases A through E are all shipped (ADR-0030
+through ADR-0036, PRs #6-#10). **Phase F (fine-tuning demo) is
+considered and deliberately not built**, not silently dropped:
+
+- Its portfolio value overlaps substantially with Phase D's LlamaIndex
+  demo — both exist to show "familiarity with a technique outside the
+  production pipeline, kept isolated, clearly labeled as a demo." Phase
+  F would be the same kind of artifact for a different technique, with
+  smaller marginal signal.
+- Section 4's own framing already predicted the likely finding (a
+  well-prompted frontier model with tool-calling should outperform a
+  fine-tuned smaller model here) — unlike every other phase, which
+  resolved a genuinely open question, Phase F would mostly confirm a
+  prediction already on record.
+- A genuine version needs real infrastructure (a GPU runtime or a paid
+  cloud training job) that every other phase deliberately avoided
+  (fastembed over Voyage AI, Tesseract over cloud OCR, Chroma as a local
+  container). Scoping it down to a toy/CPU/synthetic-only version to
+  avoid that cost would produce a demo that doesn't actually teach
+  anything about real fine-tuning tradeoffs — worse than not building it.
+
+This note is additive, per this document's own stated correction
+convention — section 4's Phase F description above is left as originally
+written.
