@@ -92,12 +92,15 @@ class Settings(BaseSettings):
     # better-but-paid option (Tesseract over cloud OCR, regex over
     # Presidio, and now fastembed over Voyage AI here).
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
-    # Explicit, not fastembed's own default (which resolves under /tmp) --
-    # same relative-default/absolute-in-container pattern as storage_root
-    # above. The Dockerfile bakes the model into this exact path (overridden
-    # to /app/.fastembed_cache in docker-compose.yml) at build time so the
-    # container never downloads it at runtime; must match here and there
-    # or the bake is silently wasted.
+    # Explicit, not fastembed's own default (which resolves under /tmp).
+    # The Dockerfile bakes the model into this exact path at build time
+    # (overridden to /opt/fastembed_cache in docker-compose.yml -- outside
+    # /app, same reason the venv lives in /opt/venv: docker-compose
+    # bind-mounts the host repo over /app at runtime, which would
+    # otherwise shadow the bake and force a runtime re-download as
+    # appuser into a path it can't write to) so the container never
+    # downloads it at runtime; must match here and there or the bake is
+    # silently wasted.
     embedding_model_cache_dir: str = "./.fastembed_cache"
 
     # Chunking parameters for ExtractionResult.raw_text before embedding

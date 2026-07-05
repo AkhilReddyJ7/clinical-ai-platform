@@ -37,9 +37,12 @@ scale.
 (`infrastructure/docker/api.Dockerfile`), not downloaded at first
 request — no runtime network dependency, no CI flakiness, same
 discipline already applied to `tesseract-ocr`. `Settings.embedding_model_cache_dir`
-must match the bake path exactly (`/app/.fastembed_cache` in-container,
-mirroring `storage_root`'s relative-default/absolute-in-container
-pattern) or the bake is silently wasted and the container downloads the
+must match the bake path exactly (`/opt/fastembed_cache` in-container —
+outside `/app`, the same reason the venv lives in `/opt/venv`: a path
+under `/app` would be shadowed by docker-compose's bind mount of the
+host repo at runtime, discovered directly when a first CI run hit
+`PermissionError: [Errno 13] Permission denied: '/app/.fastembed_cache'`)
+or the bake is silently wasted and the container downloads the
 model at runtime instead.
 
 ### 2. Chunking: character-based, no new tokenizer dependency

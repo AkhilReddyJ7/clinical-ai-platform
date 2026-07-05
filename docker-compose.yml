@@ -45,7 +45,7 @@ services:
       API_KEYS: ${API_KEYS:-local-dev:local-dev-key}
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
-      EMBEDDING_MODEL_CACHE_DIR: /app/.fastembed_cache
+      EMBEDDING_MODEL_CACHE_DIR: /opt/fastembed_cache
 
     depends_on:
       migrate:
@@ -84,7 +84,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
-      EMBEDDING_MODEL_CACHE_DIR: /app/.fastembed_cache
+      EMBEDDING_MODEL_CACHE_DIR: /opt/fastembed_cache
 
     depends_on:
       migrate:
