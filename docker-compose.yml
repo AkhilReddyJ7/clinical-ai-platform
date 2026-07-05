@@ -43,10 +43,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-clinical_ai}
       STORAGE_ROOT: /app/data/uploads
       API_KEYS: ${API_KEYS:-local-dev:local-dev-key}
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      EMBEDDING_MODEL_CACHE_DIR: /app/.fastembed_cache
 
     depends_on:
       migrate:
         condition: service_completed_successfully
+      chroma:
+        condition: service_healthy
 
     command: uv run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 
@@ -77,10 +82,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-clinical_ai}
       STORAGE_ROOT: /app/data/uploads
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      EMBEDDING_MODEL_CACHE_DIR: /app/.fastembed_cache
 
     depends_on:
       migrate:
         condition: service_completed_successfully
+      chroma:
+        condition: service_healthy
 
     # Depends on the same one-shot `migrate` service api does, not on api
     # itself -- keeps api and worker independent of each other, matching
@@ -108,6 +118,30 @@ services:
       timeout: 5s
       retries: 5
 
+  chroma:
+    # Vector store for Phase C retrieval (ADR-0033) -- the first genuinely
+    # new infrastructure service in this project; everything before this
+    # reused Postgres. Pinned exact tag, matching postgres:16-alpine's own
+    # precedent of not floating on `:latest`.
+    image: chromadb/chroma:1.5.3
+
+    ports:
+      - "8001:8000"
+
+    volumes:
+      - chroma_data:/chroma/chroma
+
+    # The chromadb/chroma image is a slim distribution with no curl/wget/
+    # python3 inside it (confirmed directly) -- a bash /dev/tcp redirection
+    # is the one healthcheck mechanism that works without those tools.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/localhost/8000"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   postgres_data:
   uploads_data:
+  chroma_data:

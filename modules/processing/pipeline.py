@@ -54,9 +54,11 @@ from modules.processing.errors import TerminalProcessingError, TransientProcessi
 from modules.processing.events import Event, EventType, emit_event
 from modules.processing.models import Job
 from modules.processing.observability.registry import register_default_subscribers
+from modules.retrieval.service import RetrievalService
 from modules.validation.base import ValidationPipeline
 from modules.validation.models import ValidationResult
 from shared.config.settings import get_settings
+from shared.logging.logger import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Startup-context wiring: registers the metrics/logging subscribers
@@ -313,6 +315,7 @@ async def run_processing_pipeline(
     field_extraction_pipeline: FieldExtractionPipeline,
     phi_validator: ValidationPipeline,
     validation_pipeline: ValidationPipeline,
+    retrieval_service: RetrievalService,
 ) -> ProcessingResult:
     """Run OCR -> PHI gate -> field extraction -> validation for a claimed job.
 
@@ -491,6 +494,47 @@ async def run_processing_pipeline(
     # genuinely didn't find a required field, and the job still completed.
     final_status = DocumentStatus.VALIDATED if validation_output.is_valid else DocumentStatus.FAILED
     await ingestion_service.update_status(db, document, final_status)
+
+    if final_status == DocumentStatus.VALIDATED:
+        # Best-effort / non-fatal (ADR-0035), mirroring
+        # modules/audit/service.py's record_action: the action being
+        # indexed must not fail because a secondary search concern did.
+        # Only ever indexes text that has already passed both PHI gates
+        # (the precheck above, and validation_pipeline gating this
+        # branch) -- never text from a phi_precheck-failed or
+        # RequiredFieldsValidator-failed document.
+        _emit_stage_started(job, document.id, "retrieval_indexing")
+        indexing_started_at = time.monotonic()
+        try:
+            chunks_indexed = await run_in_threadpool(
+                retrieval_service.index_extraction,
+                document_id=document.id,
+                extraction_id=extraction.id,
+                raw_text=combined_output.raw_text,
+            )
+        except Exception as exc:  # noqa: BLE001 -- deliberately broad: a
+            # Chroma outage, a fastembed error, or anything else
+            # unexpected here must never fail the whole document/job.
+            logger.exception(
+                "retrieval indexing failed (non-fatal): document_id=%s extraction_id=%s",
+                document.id,
+                extraction.id,
+            )
+            _emit_stage_completed(
+                job,
+                document.id,
+                "retrieval_indexing",
+                time.monotonic() - indexing_started_at,
+                error_type=type(exc).__name__,
+            )
+        else:
+            _emit_stage_completed(
+                job,
+                document.id,
+                "retrieval_indexing",
+                time.monotonic() - indexing_started_at,
+                extra_metadata={"chunks_indexed": chunks_indexed},
+            )
 
     result = ProcessingResult(
         job_id=job.id,

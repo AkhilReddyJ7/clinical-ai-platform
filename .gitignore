@@ -7,3 +7,4 @@ data/
 .ruff_cache/
 .mypy_cache/
 eval/reports/
+.fastembed_cache/

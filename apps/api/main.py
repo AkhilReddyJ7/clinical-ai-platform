@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.routers.audit import router as audit_router
 from apps.api.routers.documents import router as documents_router
 from apps.api.routers.metrics import router as metrics_router
+from apps.api.routers.retrieval import router as retrieval_router
 from modules.auth.middleware import ApiKeyGateMiddleware
 from shared.config.settings import get_settings
 from shared.database.session import get_db
@@ -44,6 +45,7 @@ app.add_middleware(ApiKeyGateMiddleware, protected_prefix="/documents")
 app.include_router(documents_router)
 app.include_router(audit_router)
 app.include_router(metrics_router)
+app.include_router(retrieval_router)
 
 
 @app.get("/")

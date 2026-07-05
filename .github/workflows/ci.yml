@@ -124,6 +124,41 @@ jobs:
           assert output.confidence > 0.3, f'suspiciously low confidence: {output.confidence}'
           "
 
+      - name: Verify real fastembed + Chroma retrieval works in the built image
+        run: |
+          # Real ONNX embedding (model baked into the image at build time,
+          # ADR-0034) and a real Chroma round-trip (ADR-0033) inside the
+          # api container, using CHROMA_HOST/CHROMA_PORT exactly as the
+          # app itself is configured -- proves the new service and
+          # dependency wiring actually work, at near-zero cost since no
+          # model download happens at request time.
+          docker compose exec -T api python3 -c "
+          import uuid
+          from modules.retrieval.fastembed_embeddings import FastEmbedEmbeddingPipeline
+          from modules.retrieval.chroma_store import ChromaVectorStore
+
+          embedder = FastEmbedEmbeddingPipeline(
+              model_name='BAAI/bge-small-en-v1.5', cache_dir='/app/.fastembed_cache'
+          )
+          store = ChromaVectorStore(host='chroma', port=8000, collection_name='ci_smoke_test')
+
+          text = 'ci smoke test chunk about diabetes management'
+          vector = embedder.embed([text])[0]
+          assert len(vector) == 384, f'unexpected embedding dimensionality: {len(vector)}'
+
+          chunk_id = str(uuid.uuid4())
+          store.upsert(
+              ids=[chunk_id],
+              embeddings=[vector],
+              documents=[text],
+              metadatas=[{'document_id': 'ci-doc', 'extraction_id': 'ci-ext', 'chunk_index': 0}],
+          )
+          results = store.query(query_embedding=vector, top_k=1)
+          print('query results:', results)
+          assert len(results) == 1, 'expected exactly one round-tripped result'
+          assert results[0].chunk_text == text
+          "
+
       - name: Show logs on failure
         if: failure()
         run: docker compose logs

@@ -19,6 +19,8 @@ from modules.processing.pipeline import (
     _is_transient_field_extraction_error,
     run_processing_pipeline,
 )
+from modules.retrieval.mock import InMemoryVectorStore, MockEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
 from modules.validation.rules import RequiredFieldsValidator
@@ -152,6 +154,9 @@ async def test_unrecognized_content_type_value_error_is_normalized_to_terminal(
                 phi_validator=PHIDetectionValidator(),
                 validation_pipeline=CompositeValidationPipeline(
                     [RequiredFieldsValidator(), PHIDetectionValidator()]
+                ),
+                retrieval_service=RetrievalService(
+                    embedding_pipeline=MockEmbeddingPipeline(), vector_store=InMemoryVectorStore()
                 ),
             )
 

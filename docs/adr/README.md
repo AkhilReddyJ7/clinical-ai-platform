@@ -41,3 +41,6 @@ baseline). Each record follows: Status, Context, Decision, Consequences.
 | [0030](0030-evaluation-harness.md) | Evaluation harness | Accepted |
 | [0031](0031-extraction-validation-versioning-and-lineage-schema.md) | Extraction/validation versioning and lineage schema | Accepted |
 | [0032](0032-reprocessing-and-backfill-triggering.md) | Reprocessing and backfill triggering | Accepted |
+| [0033](0033-vector-store-selection-for-retrieval.md) | Vector store selection for retrieval | Accepted |
+| [0034](0034-chunking-and-embeddings-strategy-for-clinical-documents.md) | Chunking and embeddings strategy for clinical documents | Accepted |
+| [0035](0035-retrieval-api-shape-and-phi-safety-at-the-retrieval-boundary.md) | Retrieval API shape and PHI safety at the retrieval boundary | Accepted |

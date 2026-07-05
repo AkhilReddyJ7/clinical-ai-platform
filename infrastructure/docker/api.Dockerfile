@@ -29,6 +29,15 @@ RUN pip install --no-cache-dir uv \
 
 COPY . .
 
+# Bake fastembed's ONNX model into the image at build time (ADR-0034) --
+# no runtime download, no first-request latency spike, no CI network
+# flakiness, same discipline as baking tesseract-ocr into the image above.
+# Path must match Settings.embedding_model_cache_dir's container override
+# (EMBEDDING_MODEL_CACHE_DIR in docker-compose.yml) or this bake is wasted.
+RUN uv run python3 -c "\
+from fastembed import TextEmbedding; \
+TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/app/.fastembed_cache')"
+
 # Pre-create the upload storage directory so it exists, correctly owned, in
 # the image *before* docker-compose mounts the uploads_data named volume
 # there. Docker initializes a fresh named volume from whatever is already

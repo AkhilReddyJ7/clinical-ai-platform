@@ -51,6 +51,10 @@ from modules.processing.repository import (
     mark_job_retry,
     reclaim_stale_job,
 )
+from modules.retrieval.base import EmbeddingPipeline, VectorStore
+from modules.retrieval.chroma_store import ChromaVectorStore
+from modules.retrieval.fastembed_embeddings import FastEmbedEmbeddingPipeline
+from modules.retrieval.service import RetrievalService
 from modules.validation.base import ValidationPipeline
 from modules.validation.composite import CompositeValidationPipeline
 from modules.validation.phi import PHIDetectionValidator
@@ -113,6 +117,36 @@ def _validation_pipeline() -> ValidationPipeline:
     return CompositeValidationPipeline([RequiredFieldsValidator(), PHIDetectionValidator()])
 
 
+@lru_cache
+def _embedding_pipeline() -> EmbeddingPipeline:
+    settings = get_settings()
+    return FastEmbedEmbeddingPipeline(
+        model_name=settings.embedding_model_name,
+        cache_dir=settings.embedding_model_cache_dir,
+    )
+
+
+@lru_cache
+def _vector_store() -> VectorStore:
+    settings = get_settings()
+    return ChromaVectorStore(
+        host=settings.chroma_host,
+        port=settings.chroma_port,
+        collection_name=settings.chroma_collection_name,
+    )
+
+
+@lru_cache
+def _retrieval_service() -> RetrievalService:
+    settings = get_settings()
+    return RetrievalService(
+        embedding_pipeline=_embedding_pipeline(),
+        vector_store=_vector_store(),
+        chunk_size_chars=settings.retrieval_chunk_size_chars,
+        overlap_chars=settings.retrieval_chunk_overlap_chars,
+    )
+
+
 async def process_job(job: Job) -> ProcessingResult:
     """Default processing boundary: runs the real OCR/PHI/extraction pipeline.
 
@@ -130,6 +164,7 @@ async def process_job(job: Job) -> ProcessingResult:
             field_extraction_pipeline=_field_extraction_pipeline(),
             phi_validator=_phi_validator(),
             validation_pipeline=_validation_pipeline(),
+            retrieval_service=_retrieval_service(),
         )
 
 
