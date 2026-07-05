@@ -1,0 +1,14 @@
+{"query_id": "rq-001", "query_text": "how is the patient's blood sugar control being managed", "relevant_doc_ids": ["doc-diabetes-mgmt", "doc-diabetes-education"], "notes": "multi-relevant: recall@1 capped at 0.5, hit@1 still achievable"}
+{"query_id": "rq-002", "query_text": "treatment for fluid overload and shortness of breath from heart failure", "relevant_doc_ids": ["doc-chf-admission"], "notes": "single relevant; multi-chunk doc exercises document dedup"}
+{"query_id": "rq-003", "query_text": "adjusting blood pressure medications when readings stay high", "relevant_doc_ids": ["doc-hypertension-visit", "doc-htn-med-review"], "notes": "multi-relevant across the hypertension pair"}
+{"query_id": "rq-004", "query_text": "when should my child use the rescue inhaler for wheezing", "relevant_doc_ids": ["doc-asthma-action"], "notes": "single relevant"}
+{"query_id": "rq-005", "query_text": "recovery exercises and walking after knee replacement surgery", "relevant_doc_ids": ["doc-knee-postop"], "notes": "single relevant"}
+{"query_id": "rq-006", "query_text": "going home after a COPD flare with oxygen and inhalers", "relevant_doc_ids": ["doc-copd-discharge"], "notes": "single relevant; multi-chunk doc"}
+{"query_id": "rq-007", "query_text": "preventive medication for frequent headaches with visual aura", "relevant_doc_ids": ["doc-migraine-neuro"], "notes": "single relevant"}
+{"query_id": "rq-008", "query_text": "third trimester pregnancy checkup with fetal heartbeat", "relevant_doc_ids": ["doc-prenatal-visit"], "notes": "single relevant"}
+{"query_id": "rq-009", "query_text": "increasing the antidepressant dose after a partial response", "relevant_doc_ids": ["doc-depression-psych"], "notes": "single relevant"}
+{"query_id": "rq-010", "query_text": "declining kidney function and dietary protein restriction", "relevant_doc_ids": ["doc-ckd-nephro"], "notes": "single relevant"}
+{"query_id": "rq-011", "query_text": "starting a blood thinner for an irregular heartbeat to prevent stroke", "relevant_doc_ids": ["doc-afib-cardio"], "notes": "single relevant"}
+{"query_id": "rq-012", "query_text": "antibiotics for a spreading skin infection on the leg", "relevant_doc_ids": ["doc-cellulitis-ed"], "notes": "single relevant"}
+{"query_id": "rq-013", "query_text": "vaccination schedule for a new puppy", "relevant_doc_ids": [], "notes": "no-answer: out-of-domain; informational only, never gated"}
+{"query_id": "rq-014", "query_text": "how do I file a car insurance claim after an accident", "relevant_doc_ids": [], "notes": "no-answer: out-of-domain; informational only, never gated"}
